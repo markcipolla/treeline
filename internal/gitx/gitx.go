@@ -312,6 +312,21 @@ func ApplyToIndex(dir, patch string, reverse bool) error {
 	return nil
 }
 
+// StagedDiff is the plain (uncolored) diff of everything in the index.
+func StagedDiff(dir string) (string, error) {
+	return run(dir, "diff", "--cached", "--no-color")
+}
+
+// CommitStaged commits what's in the index with a subject and optional body.
+func CommitStaged(dir, subject, body string) error {
+	args := []string{"commit", "-m", subject}
+	if strings.TrimSpace(body) != "" {
+		args = append(args, "-m", body)
+	}
+	_, err := run(dir, args...)
+	return err
+}
+
 // Commit is one entry of the log.
 type Commit struct {
 	Short   string

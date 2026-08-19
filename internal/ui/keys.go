@@ -35,5 +35,8 @@ var (
 	keyHunks    = key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "hunks"))
 	keyLog      = key.NewBinding(key.WithKeys("l"), key.WithHelp("l", "log"))
 	keyBranchD  = key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "branch diff"))
+	keyCommitC  = key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "commit"))
+	keyCommitGo = key.NewBinding(key.WithKeys("ctrl+s"), key.WithHelp("ctrl+s", "commit"))
+	keyGenMsg   = key.NewBinding(key.WithKeys("ctrl+g"), key.WithHelp("ctrl+g", "generate message"))
 	keyTermEsc  = key.NewBinding(key.WithKeys("ctrl+q"), key.WithHelp("ctrl+q", "next pane"))
 )

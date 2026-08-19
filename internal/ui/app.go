@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/table"
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -123,6 +124,12 @@ type Model struct {
 	commits     []gitx.Commit
 	commitSel   int
 
+	// commit form
+	commitSubject textinput.Model
+	commitBody    textarea.Model
+	commitFocus   int // 0 subject, 1 body
+	generating    bool
+
 	// delete confirm
 	delTarget *gitx.Worktree
 	delFocus  int // focused button: 0 remove, 1 remove+branch, 2 cancel
@@ -188,6 +195,12 @@ func New(cfg *config.Config, root string) Model {
 	}
 	authInputs[1].EchoMode = textinput.EchoPassword
 
+	commitSubject := newInput("summary of the change…")
+	commitBody := textarea.New()
+	commitBody.Placeholder = "longer description (optional)…"
+	commitBody.ShowLineNumbers = false
+	commitBody.CharLimit = 0
+
 	ghOwner, ghRepo, ghOK := github.RepoFromRemote(root)
 
 	return Model{
@@ -203,6 +216,8 @@ func New(cfg *config.Config, root string) Model {
 		ghOK:          ghOK,
 		filterInput:   filterInput,
 		searchInput:   searchInput,
+		commitSubject: commitSubject,
+		commitBody:    commitBody,
 		terms:         map[string]*claudeSession{},
 		diffVP:        viewport.New(0, 0),
 		viewport:      viewport.New(0, 0),
@@ -344,6 +359,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.gitDiff = msg.diff
 		}
+		return m, nil
+
+	case gitCommitMsg:
+		if msg.err != nil {
+			m.err = msg.err
+			return m, nil
+		}
+		m.commitSubject.SetValue("")
+		m.commitBody.SetValue("")
+		m.closeCommitForm()
+		return m, tea.Batch(m.reloadGit(), loadWorktreesCmd(m.root))
+
+	case genCommitMsg:
+		m.generating = false
+		if msg.dir != m.gitFor || m.gitMode != gitModeCommit {
+			return m, nil // form was closed meanwhile
+		}
+		if msg.err != nil {
+			m.err = msg.err
+			return m, nil
+		}
+		m.commitSubject.SetValue(msg.subject)
+		m.commitBody.SetValue(msg.body)
 		return m, nil
 
 	case diffMsg:
@@ -511,6 +549,13 @@ func (m *Model) resize() {
 		}
 		m.diffVP.Width = rw - 2
 		m.diffVP.Height = inner
+		m.commitSubject.Width = rw - 10
+		m.commitBody.SetWidth(rw - 6)
+		bh := inner - 9
+		if bh < 3 {
+			bh = 3
+		}
+		m.commitBody.SetHeight(bh)
 		m.setDiffContent()
 	} else {
 		m.setTableLayout(w, h)
@@ -1072,6 +1117,9 @@ func (m Model) keyMain(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.pane == paneClaude {
 			return m.keyClaude(k) // claude gets everything; ctrl+q leaves
 		}
+		if m.pane == paneDiff && m.gitMode == gitModeCommit && k.String() != "ctrl+q" {
+			return m.keyGit(k) // the form owns tab/enter while typing
+		}
 		switch k.String() {
 		case "tab", "ctrl+q":
 			return m.focusPane((m.pane + 1) % 3)
@@ -1524,6 +1572,21 @@ func (m Model) handleClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			return m.openSearch()
 		case m.clicked(msg, "pane:issues"):
 			return m.focusPane(paneIssues)
+		}
+		if m.threePane() && m.gitMode == gitModeCommit {
+			switch {
+			case m.clicked(msg, "btn:commit"):
+				return m, m.submitCommit()
+			case m.clicked(msg, "btn:gen"):
+				if !m.generating {
+					m.generating = true
+					return m, generateCommitMsgCmd(m.gitFor)
+				}
+				return m, nil
+			case m.clicked(msg, "btn:commit-cancel"):
+				m.closeCommitForm()
+				return m, nil
+			}
 		}
 		if m.threePane() && m.gitMode == gitModeFiles {
 			for i := range m.gitUnstaged {

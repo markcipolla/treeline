@@ -1,10 +1,13 @@
 package ui
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -26,6 +29,7 @@ const (
 	gitModeHunks
 	gitModeLog
 	gitModeBranch
+	gitModeCommit
 )
 
 func gitZoneID(staged bool, i int) string {
@@ -54,6 +58,112 @@ type gitFileDiffMsg struct {
 	staged bool
 	diff   string
 	err    error
+}
+
+type gitCommitMsg struct {
+	dir string
+	err error
+}
+
+func commitStagedCmd(dir, subject, body string) tea.Cmd {
+	return func() tea.Msg {
+		return gitCommitMsg{dir: dir, err: gitx.CommitStaged(dir, subject, body)}
+	}
+}
+
+type genCommitMsg struct {
+	dir     string
+	subject string
+	body    string
+	err     error
+}
+
+// generateCommitMsgCmd asks the claude CLI to draft a commit message from
+// the staged diff.
+func generateCommitMsgCmd(dir string) tea.Cmd {
+	return func() tea.Msg {
+		diff, err := gitx.StagedDiff(dir)
+		if err != nil {
+			return genCommitMsg{dir: dir, err: err}
+		}
+		if strings.TrimSpace(diff) == "" {
+			return genCommitMsg{dir: dir, err: errors.New("nothing staged to describe")}
+		}
+		if len(diff) > 60000 {
+			diff = diff[:60000] + "\n… (diff truncated)"
+		}
+		prompt := "Write a git commit message for the staged diff below. " +
+			"First line: imperative subject under 65 characters. Then a blank line, " +
+			"then a short body (2-5 sentences) explaining what changed and why. " +
+			"Output only the commit message — no markdown, no code fences, no commentary.\n\n" + diff
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, "claude", "-p", prompt)
+		cmd.Dir = dir
+		out, err := cmd.Output()
+		if err != nil {
+			return genCommitMsg{dir: dir, err: fmt.Errorf("claude: %v", err)}
+		}
+		subject, body := splitCommitMessage(string(out))
+		if subject == "" {
+			return genCommitMsg{dir: dir, err: errors.New("claude returned an empty message")}
+		}
+		return genCommitMsg{dir: dir, subject: subject, body: body}
+	}
+}
+
+// splitCommitMessage separates a generated message into subject and body,
+// tolerating stray code fences.
+func splitCommitMessage(out string) (subject, body string) {
+	out = strings.TrimSpace(out)
+	out = strings.TrimPrefix(out, "```")
+	out = strings.TrimSuffix(out, "```")
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) == 0 {
+		return "", ""
+	}
+	subject = strings.TrimSpace(lines[0])
+	if len(lines) > 1 {
+		body = strings.TrimSpace(strings.Join(lines[1:], "\n"))
+	}
+	return subject, body
+}
+
+// openCommitForm switches the pane to the commit form.
+func (m *Model) openCommitForm() {
+	if len(m.gitStaged) == 0 {
+		m.err = errors.New("nothing staged — stage files or hunks first")
+		return
+	}
+	m.gitMode = gitModeCommit
+	m.commitFocus = 0
+	m.commitSubject.Focus()
+	m.commitBody.Blur()
+}
+
+func (m *Model) closeCommitForm() {
+	m.commitSubject.Blur()
+	m.commitBody.Blur()
+	m.gitMode = gitModeFiles
+}
+
+func (m *Model) setCommitFocus(f int) tea.Cmd {
+	m.commitFocus = f
+	if f == 0 {
+		m.commitBody.Blur()
+		return m.commitSubject.Focus()
+	}
+	m.commitSubject.Blur()
+	return m.commitBody.Focus()
+}
+
+func (m *Model) submitCommit() tea.Cmd {
+	subject := strings.TrimSpace(m.commitSubject.Value())
+	if subject == "" {
+		m.err = errors.New("a commit subject is required")
+		return nil
+	}
+	return commitStagedCmd(m.gitFor, subject, m.commitBody.Value())
 }
 
 func loadGitStatusCmd(dir string) tea.Cmd {
@@ -306,6 +416,35 @@ func (m Model) keyGit(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
+	if m.gitMode == gitModeCommit {
+		switch k.String() {
+		case "esc":
+			m.closeCommitForm()
+			return m, nil
+		case "tab", "shift+tab":
+			return m, m.setCommitFocus(1 - m.commitFocus)
+		case "ctrl+s":
+			return m, m.submitCommit()
+		case "ctrl+g":
+			if !m.generating {
+				m.generating = true
+				return m, generateCommitMsgCmd(m.gitFor)
+			}
+			return m, nil
+		case "enter":
+			if m.commitFocus == 0 {
+				return m, m.setCommitFocus(1)
+			}
+		}
+		var cmd tea.Cmd
+		if m.commitFocus == 0 {
+			m.commitSubject, cmd = m.commitSubject.Update(k)
+		} else {
+			m.commitBody, cmd = m.commitBody.Update(k)
+		}
+		return m, cmd
+	}
+
 	// files mode
 	switch k.String() {
 	case "esc":
@@ -326,6 +465,9 @@ func (m Model) keyGit(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "b":
 		m.gitMode = gitModeBranch
+		return m, nil
+	case "c":
+		m.openCommitForm()
 		return m, nil
 	case "r":
 		return m, m.reloadGit()
@@ -467,6 +609,23 @@ func (m Model) gitPaneContent(w, h int) (string, string) {
 			return title, dimStyle.Render("no changes against " + m.base)
 		}
 		return title, m.diffVP.View()
+	}
+
+	if m.gitMode == gitModeCommit {
+		title := fmt.Sprintf("git — commit %d staged file(s)", len(m.gitStaged))
+		var b strings.Builder
+		b.WriteString(labelStyle.Render("subject") + "\n" + m.commitSubject.View() + "\n\n")
+		b.WriteString(labelStyle.Render("body") + "\n" + m.commitBody.View() + "\n\n")
+		genLabel := "✨ generate message"
+		if m.generating {
+			genLabel = m.spinner.View() + " generating…"
+		}
+		b.WriteString(m.buttonRow(
+			m.button("btn:commit", "commit (ctrl+s)", true),
+			m.button("btn:gen", genLabel, false),
+			m.button("btn:commit-cancel", "cancel", false),
+		))
+		return title, clipLines(b.String(), w, h)
 	}
 
 	// files mode: unstaged | staged side by side, preview below
