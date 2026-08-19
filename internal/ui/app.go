@@ -103,8 +103,22 @@ type Model struct {
 
 	diffVP      viewport.Model
 	diffRaw     string
-	diffFor     string // worktree path the diff shows
+	diffFor     string // worktree path the branch diff shows
 	loadingDiff bool
+
+	// git pane: file picker, hunk staging, commit log
+	gitFor     string // directory the pane operates on
+	gitMode    int
+	gitRows    []gitRow
+	gitSel     int
+	gitDiff    string // colored preview for the selected file
+	hunkPath   string
+	hunkStaged bool
+	hunkHeader string
+	hunks      []string
+	hunkSel    int
+	commits    []gitx.Commit
+	commitSel  int
 
 	// delete confirm
 	delTarget *gitx.Worktree
@@ -291,6 +305,42 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			sugs = append(sugs, is.Title, is.Identifier)
 		}
 		m.searchInput.SetSuggestions(sugs)
+		return m, nil
+
+	case gitStatusMsg:
+		if msg.dir != m.gitFor {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.err = msg.err
+			return m, nil
+		}
+		m.gitRows = buildGitRows(msg.files)
+		m.clampGitSel()
+		return m, m.loadSelectedFileDiff()
+
+	case gitLogMsg:
+		if msg.dir != m.gitFor {
+			return m, nil
+		}
+		if msg.err == nil {
+			m.commits = msg.commits
+			if m.commitSel >= len(m.commits) {
+				m.commitSel = 0
+			}
+		}
+		return m, nil
+
+	case gitFileDiffMsg:
+		row := m.selectedGitRow()
+		if msg.dir != m.gitFor || row == nil || row.fs.Path != msg.path || row.staged != msg.staged {
+			return m, nil // selection moved on
+		}
+		if msg.err != nil {
+			m.gitDiff = errStyle.Render("✗ " + msg.err.Error())
+		} else {
+			m.gitDiff = msg.diff
+		}
 		return m, nil
 
 	case diffMsg:
@@ -1026,7 +1076,7 @@ func (m Model) keyMain(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.focusPane((m.pane + 2) % 3)
 		}
 		if m.pane == paneDiff {
-			return m.keyDiff(k)
+			return m.keyGit(k)
 		}
 	}
 	if m.filtering {
@@ -1069,6 +1119,9 @@ func (m Model) keyMain(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.authed {
 			m.loadingIssues = true
 			cmds = append(cmds, loadIssuesCmd(m.cfg))
+		}
+		if c := m.reloadGit(); c != nil {
+			cmds = append(cmds, c)
 		}
 		return m, tea.Batch(cmds...)
 
@@ -1208,26 +1261,35 @@ func (m *Model) setDiffContent() {
 	m.diffVP.GotoTop()
 }
 
-// syncPanes points the diff and chat panes at the selected worktree.
+// syncPanes points the git and chat panes at the selected worktree.
 func (m *Model) syncPanes() tea.Cmd {
 	if !m.threePane() {
 		return nil
 	}
+	var cmds []tea.Cmd
+
 	var path string
 	if ref := m.selectedRef(); ref.wt != nil && !ref.wt.Prunable {
 		path = ref.wt.Path
 	}
-	if path == m.diffFor {
-		return nil
+	if path != m.diffFor {
+		m.diffFor = path
+		m.diffRaw = ""
+		m.setDiffContent()
+		if path != "" {
+			m.loadingDiff = true
+			cmds = append(cmds, loadDiffCmd(path, m.base))
+		}
 	}
-	m.diffFor = path
-	m.diffRaw = ""
-	m.setDiffContent()
-	if path == "" {
-		return nil
+
+	if dir := m.claudeDir(); dir != m.gitFor {
+		m.gitFor = dir
+		m.gitMode = gitModeFiles
+		m.gitRows, m.gitSel, m.gitDiff = nil, 0, ""
+		m.hunks, m.commits, m.commitSel = nil, nil, 0
+		cmds = append(cmds, loadGitStatusCmd(dir), loadGitLogCmd(dir))
 	}
-	m.loadingDiff = true
-	return loadDiffCmd(path, m.base)
+	return tea.Batch(cmds...)
 }
 
 func (m Model) keyClaude(k tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -1250,15 +1312,6 @@ func (m Model) keyClaude(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		s.pty.Write(b)
 	}
 	return m, nil
-}
-
-func (m Model) keyDiff(k tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if k.String() == "esc" {
-		return m.focusPane(paneIssues)
-	}
-	var cmd tea.Cmd
-	m.diffVP, cmd = m.diffVP.Update(k)
-	return m, cmd
 }
 
 func (m Model) keyDetail(k tea.KeyMsg) (tea.Model, tea.Cmd) {

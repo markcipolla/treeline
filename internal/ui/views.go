@@ -149,7 +149,7 @@ func (m Model) viewMain() string {
 		case paneClaude:
 			bindings = []key.Binding{keyTermEsc}
 		case paneDiff:
-			bindings = []key.Binding{keyPane, keyBack, keyChoose}
+			bindings = []key.Binding{keyChoose, keyStage, keyHunks, keyLog, keyBranchD, keyBack}
 		}
 	}
 	if m.filtering {
@@ -213,24 +213,11 @@ func (m Model) viewPanels() string {
 	center := m.zones.Mark("pane:claude",
 		pane(lw, bottomH, m.pane == paneClaude, claudeTitle, claudeBody))
 
-	diffTitle := "diff"
-	var diffBody string
-	switch {
-	case m.selectedRef().wt != nil && m.selectedRef().wt.Prunable:
-		diffBody = warnStyle.Render("worktree directory is gone — press d to clean it up")
-	case m.diffFor == "":
-		diffBody = dimStyle.Render("select a worktree to see its diff")
-	case m.loadingDiff:
-		diffBody = m.spinner.View() + dimStyle.Render(" diffing…")
-	case strings.TrimSpace(m.diffRaw) == "":
-		diffBody = dimStyle.Render("no changes against " + m.base)
-	default:
-		diffBody = m.diffVP.View()
+	gitTitle, gitBody := m.gitPaneContent(rw-4, bottomH-4)
+	if wt := m.selectedRef().wt; wt != nil && wt.Prunable {
+		gitBody = warnStyle.Render("worktree directory is gone — press d to clean it up")
 	}
-	if wt := m.selectedRef().wt; wt != nil {
-		diffTitle = "diff — " + wt.Branch
-	}
-	right := m.zones.Mark("pane:diff", pane(rw, bottomH, m.pane == paneDiff, diffTitle, diffBody))
+	right := m.zones.Mark("pane:diff", pane(rw, bottomH, m.pane == paneDiff, gitTitle, gitBody))
 
 	return lipgloss.JoinVertical(lipgloss.Left,
 		top,
