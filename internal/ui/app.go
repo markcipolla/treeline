@@ -107,18 +107,21 @@ type Model struct {
 	loadingDiff bool
 
 	// git pane: file picker, hunk staging, commit log
-	gitFor     string // directory the pane operates on
-	gitMode    int
-	gitRows    []gitRow
-	gitSel     int
-	gitDiff    string // colored preview for the selected file
-	hunkPath   string
-	hunkStaged bool
-	hunkHeader string
-	hunks      []string
-	hunkSel    int
-	commits    []gitx.Commit
-	commitSel  int
+	gitFor      string // directory the pane operates on
+	gitMode     int
+	gitUnstaged []gitx.FileStatus
+	gitStaged   []gitx.FileStatus
+	gitCol      int // active column: 0 unstaged, 1 staged
+	gitSelU     int // per-column selections
+	gitSelS     int
+	gitDiff     string // colored preview for the selected file
+	hunkPath    string
+	hunkStaged  bool
+	hunkHeader  string
+	hunks       []string
+	hunkSel     int
+	commits     []gitx.Commit
+	commitSel   int
 
 	// delete confirm
 	delTarget *gitx.Worktree
@@ -315,7 +318,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = msg.err
 			return m, nil
 		}
-		m.gitRows = buildGitRows(msg.files)
+		m.gitUnstaged, m.gitStaged = splitStatus(msg.files)
 		m.clampGitSel()
 		return m, m.loadSelectedFileDiff()
 
@@ -332,8 +335,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case gitFileDiffMsg:
-		row := m.selectedGitRow()
-		if msg.dir != m.gitFor || row == nil || row.fs.Path != msg.path || row.staged != msg.staged {
+		fs, staged, ok := m.selectedGitFile()
+		if msg.dir != m.gitFor || !ok || fs.Path != msg.path || staged != msg.staged {
 			return m, nil // selection moved on
 		}
 		if msg.err != nil {
@@ -1285,7 +1288,8 @@ func (m *Model) syncPanes() tea.Cmd {
 	if dir := m.claudeDir(); dir != m.gitFor {
 		m.gitFor = dir
 		m.gitMode = gitModeFiles
-		m.gitRows, m.gitSel, m.gitDiff = nil, 0, ""
+		m.gitUnstaged, m.gitStaged, m.gitDiff = nil, nil, ""
+		m.gitCol, m.gitSelU, m.gitSelS = 0, 0, 0
 		m.hunks, m.commits, m.commitSel = nil, nil, 0
 		cmds = append(cmds, loadGitStatusCmd(dir), loadGitLogCmd(dir))
 	}
@@ -1460,6 +1464,21 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				return m, nil // the embedded claude owns its own scrollback
 			}
 			if m.threePane() && m.pane == paneDiff {
+				switch m.gitMode {
+				case gitModeFiles:
+					d := 1
+					if up {
+						d = -1
+					}
+					return m, m.moveGitSel(d)
+				case gitModeLog:
+					if up && m.commitSel > 0 {
+						m.commitSel--
+					} else if !up && m.commitSel < len(m.commits)-1 {
+						m.commitSel++
+					}
+					return m, nil
+				}
 				var cmd tea.Cmd
 				m.diffVP, cmd = m.diffVP.Update(msg)
 				return m, cmd
@@ -1505,6 +1524,20 @@ func (m Model) handleClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			return m.openSearch()
 		case m.clicked(msg, "pane:issues"):
 			return m.focusPane(paneIssues)
+		}
+		if m.threePane() && m.gitMode == gitModeFiles {
+			for i := range m.gitUnstaged {
+				if m.clicked(msg, gitZoneID(false, i)) {
+					return m.clickGitFile(false, i)
+				}
+			}
+			for i := range m.gitStaged {
+				if m.clicked(msg, gitZoneID(true, i)) {
+					return m.clickGitFile(true, i)
+				}
+			}
+		}
+		switch {
 		case m.clicked(msg, "pane:claude"):
 			return m.focusPane(paneClaude)
 		case m.clicked(msg, "pane:diff"):
