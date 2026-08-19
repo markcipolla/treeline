@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -33,7 +34,18 @@ type claudeSession struct {
 	scroll int // lines scrolled up into history; 0 = live
 	notify chan struct{}
 	exited atomic.Bool
+
+	// mouse selection, in absolute coordinates: line < scrollback length is
+	// history, line >= is the live screen (index - sbLen)
+	selOn    bool // drag in progress
+	selMoved bool
+	selShown bool // highlight persists after release until cleared
+	selA     selPoint
+	selB     selPoint
 }
+
+// selPoint addresses a cell across scrollback + live screen.
+type selPoint struct{ line, col int }
 
 // startTerm is swappable so tests don't spawn real claude processes.
 var startTerm = startClaudeSession
@@ -155,11 +167,184 @@ func (s *claudeSession) scrolled() int {
 	return s.scroll
 }
 
+// absAt converts pane-relative cell coords into an absolute selection point.
+func (s *claudeSession) absAt(x, y int) selPoint {
+	if x < 0 {
+		x = 0
+	}
+	if x >= s.cols {
+		x = s.cols - 1
+	}
+	if y < 0 {
+		y = 0
+	}
+	if y >= s.rows {
+		y = s.rows - 1
+	}
+	sbLen := s.em.ScrollbackLen()
+	k := s.scroll
+	if k > sbLen {
+		k = sbLen
+	}
+	return selPoint{line: sbLen - k + y, col: x}
+}
+
+func (s *claudeSession) selPress(x, y int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.selA = s.absAt(x, y)
+	s.selB = s.selA
+	s.selOn, s.selMoved, s.selShown = true, false, true
+}
+
+func (s *claudeSession) selDrag(x, y int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.selOn {
+		return
+	}
+	p := s.absAt(x, y)
+	if p != s.selB {
+		s.selMoved = true
+	}
+	s.selB = p
+}
+
+// selRelease finishes a drag: it returns the selected text (empty for a
+// plain click) and whether the pointer actually moved.
+func (s *claudeSession) selRelease() (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.selOn = false
+	if !s.selMoved {
+		s.selShown = false
+		return "", false
+	}
+	return s.selectedTextLocked(), true
+}
+
+func (s *claudeSession) selecting() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.selOn
+}
+
+func (s *claudeSession) clearSel() {
+	s.mu.Lock()
+	s.selOn, s.selMoved, s.selShown = false, false, false
+	s.mu.Unlock()
+}
+
+// selBoundsLocked returns the normalized selection, if one is visible.
+func (s *claudeSession) selBoundsLocked() (a, b selPoint, ok bool) {
+	if !s.selShown {
+		return a, b, false
+	}
+	a, b = s.selA, s.selB
+	if a.line > b.line || (a.line == b.line && a.col > b.col) {
+		a, b = b, a
+	}
+	return a, b, true
+}
+
+// cellAtAbsLocked reads a cell from scrollback or the live screen.
+func (s *claudeSession) cellAtAbsLocked(x, abs int) *uv.Cell {
+	sbLen := s.em.ScrollbackLen()
+	if abs < sbLen {
+		return s.em.ScrollbackCellAt(x, abs)
+	}
+	return s.em.CellAt(x, abs-sbLen)
+}
+
+// lineTextAbsLocked is the column-aligned plain text of an absolute line.
+func (s *claudeSession) lineTextAbsLocked(abs int) string {
+	var b strings.Builder
+	for x := 0; x < s.cols; {
+		c := s.cellAtAbsLocked(x, abs)
+		if c == nil || c.Content == "" {
+			b.WriteString(" ")
+			x++
+			continue
+		}
+		b.WriteString(c.Content)
+		if c.Width > 1 {
+			b.WriteString(strings.Repeat(" ", c.Width-1))
+			x += c.Width
+		} else {
+			x++
+		}
+	}
+	return b.String()
+}
+
+func (s *claudeSession) selectedTextLocked() string {
+	a, b, ok := s.selBoundsLocked()
+	if !ok {
+		return ""
+	}
+	var lines []string
+	for l := a.line; l <= b.line; l++ {
+		text := []rune(s.lineTextAbsLocked(l))
+		from, to := 0, len(text)
+		if l == a.line && a.col < len(text) {
+			from = a.col
+		}
+		if l == b.line && b.col+1 < len(text) {
+			to = b.col + 1
+		}
+		if from > to {
+			from = to
+		}
+		lines = append(lines, strings.TrimRight(string(text[from:to]), " "))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// copyToClipboard puts text on the system clipboard.
+func copyToClipboard(text string) error {
+	var cmd *exec.Cmd
+	switch {
+	case runtime.GOOS == "darwin":
+		cmd = exec.Command("pbcopy")
+	default:
+		if _, err := exec.LookPath("wl-copy"); err == nil {
+			cmd = exec.Command("wl-copy")
+		} else {
+			cmd = exec.Command("xclip", "-selection", "clipboard")
+		}
+	}
+	cmd.Stdin = strings.NewReader(text)
+	return cmd.Run()
+}
+
 // render draws the terminal: the live screen, or a window sliding into the
 // scrollback when scrolled up.
 func (s *claudeSession) render(focused bool) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	sbLen := s.em.ScrollbackLen()
+	k := s.scroll
+	if k > sbLen {
+		k = sbLen
+	}
+	selA, selB, hasSel := s.selBoundsLocked()
+
+	// highlightAbs rebuilds a visual row from cells when it intersects the
+	// selection, reversing the selected span.
+	highlightAbs := func(abs int, fallback string) string {
+		if !hasSel || abs < selA.line || abs > selB.line {
+			return fallback
+		}
+		from, to := 0, s.cols-1
+		if abs == selA.line {
+			from = selA.col
+		}
+		if abs == selB.line {
+			to = selB.col
+		}
+		return s.renderCellsLine(abs, -1, from, to)
+	}
 
 	screen := strings.Split(s.em.Render(), "\n")
 	for len(screen) < s.rows {
@@ -174,26 +359,51 @@ func (s *claudeSession) render(focused bool) string {
 				screen[cur.Y] = s.renderLineWithCursor(cur.Y, cur.X)
 			}
 		}
+		for y := range screen {
+			screen[y] = highlightAbs(sbLen+y, screen[y])
+		}
 		return strings.Join(screen, "\n")
 	}
 
-	sbLen := s.em.ScrollbackLen()
-	k := s.scroll
-	if k > sbLen {
-		k = sbLen
-	}
 	clip := maxWidthStyle(s.cols)
 	lines := make([]string, 0, s.rows)
 	for i := sbLen - k; i < sbLen && len(lines) < s.rows; i++ {
-		lines = append(lines, clip.Render(s.em.Scrollback().Line(i).Render()))
+		lines = append(lines, highlightAbs(i, clip.Render(s.em.Scrollback().Line(i).Render())))
 	}
 	for i := 0; len(lines) < s.rows && i < len(screen); i++ {
-		lines = append(lines, screen[i])
+		lines = append(lines, highlightAbs(sbLen+i, screen[i]))
 	}
 	for len(lines) < s.rows {
 		lines = append(lines, "")
 	}
 	return strings.Join(lines, "\n")
+}
+
+// renderCellsLine rebuilds one absolute line from cells, reversing the
+// cursor cell (curX ≥ 0) and/or the selected column span selFrom..selTo.
+func (s *claudeSession) renderCellsLine(abs, curX, selFrom, selTo int) string {
+	var b strings.Builder
+	for x := 0; x < s.cols; {
+		c := s.cellAtAbsLocked(x, abs)
+		var st uv.Style
+		content := " "
+		width := 1
+		if c != nil {
+			st = c.Style
+			if c.Content != "" {
+				content = c.Content
+			}
+			if c.Width > 1 {
+				width = c.Width
+			}
+		}
+		if x == curX || (selFrom >= 0 && x >= selFrom && x <= selTo) {
+			st.Attrs ^= uv.AttrReverse
+		}
+		b.WriteString(st.String() + content + "\x1b[0m")
+		x += width
+	}
+	return b.String()
 }
 
 var urlRE = regexp.MustCompile(`https?://[^\s"'<>]+`)
@@ -256,33 +466,9 @@ func (s *claudeSession) urlAt(x, y int) string {
 	return ""
 }
 
-// renderLineWithCursor rebuilds one screen row from cells, reversing the
-// cell under the cursor so it reads as a block cursor.
+// renderLineWithCursor rebuilds one screen row with a block cursor.
 func (s *claudeSession) renderLineWithCursor(y, curX int) string {
-	var b strings.Builder
-	for x := 0; x < s.cols; {
-		c := s.em.CellAt(x, y)
-		if c == nil {
-			b.WriteString(" ")
-			x++
-			continue
-		}
-		st := c.Style
-		if x == curX {
-			st.Attrs ^= uv.AttrReverse
-		}
-		content := c.Content
-		if content == "" {
-			content = " "
-		}
-		b.WriteString(st.String() + content + "\x1b[0m")
-		if c.Width > 1 {
-			x += c.Width
-		} else {
-			x++
-		}
-	}
-	return b.String()
+	return s.renderCellsLine(s.em.ScrollbackLen()+y, curX, -1, -1)
 }
 
 // encodeKey turns a bubbletea key event into the bytes a pty expects.

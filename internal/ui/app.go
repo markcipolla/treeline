@@ -111,6 +111,7 @@ type Model struct {
 	// git pane: file picker, hunk staging, commit log
 	gitFor      string    // directory the pane operates on
 	gitFreshAt  time.Time // last auto-refresh; throttles claude-driven reloads
+	copiedUntil time.Time // "copied" flash after a drag selection
 	gitMode     int
 	gitUnstaged []gitx.FileStatus
 	gitStaged   []gitx.FileStatus
@@ -1382,6 +1383,7 @@ func (m Model) keyClaude(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if b := encodeKey(k); len(b) > 0 {
 		s.scrollLive() // typing snaps back to the live screen
+		s.clearSel()
 		s.pty.Write(b)
 	}
 	return m, nil
@@ -1573,8 +1575,46 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case tea.MouseButtonLeft:
-		if msg.Action != tea.MouseActionRelease {
+	case tea.MouseButtonLeft, tea.MouseButtonNone:
+		// drag selection in the claude pane, like a normal terminal:
+		// press anchors, drag extends, release copies to the clipboard
+		if m.screen == scrMain && m.threePane() {
+			if s := m.terms[m.claudeDir()]; s != nil {
+				z := m.zones.Get("pane:claude")
+				inPane := z != nil && !z.IsZero() && z.InBounds(msg)
+				switch msg.Action {
+				case tea.MouseActionPress:
+					if msg.Button == tea.MouseButtonLeft && inPane {
+						x, y := z.Pos(msg)
+						s.selPress(x-1, y-3) // border col; border+title+rule rows
+						return m, nil
+					}
+					s.clearSel()
+				case tea.MouseActionMotion:
+					if s.selecting() && z != nil && !z.IsZero() {
+						x, y := z.Pos(msg)
+						s.selDrag(x-1, y-3)
+						return m, nil
+					}
+				case tea.MouseActionRelease:
+					if s.selecting() {
+						text, moved := s.selRelease()
+						if moved {
+							if text != "" {
+								if err := copyToClipboard(text); err != nil {
+									m.err = err
+								} else {
+									m.copiedUntil = time.Now().Add(2 * time.Second)
+								}
+							}
+							return m, nil
+						}
+						// no movement: fall through and treat as a click
+					}
+				}
+			}
+		}
+		if msg.Action != tea.MouseActionRelease || msg.Button != tea.MouseButtonLeft {
 			return m, nil
 		}
 		return m.handleClick(msg)
