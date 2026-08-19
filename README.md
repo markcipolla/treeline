@@ -14,6 +14,14 @@ and [BubbleZone](https://github.com/lrstanley/bubblezone) for mouse support.
 
 ## Install
 
+With Homebrew:
+
+```sh
+brew install markcipolla/tap/treeline
+```
+
+Or with Go:
+
 ```sh
 go install github.com/markcipolla/treeline@latest
 ```
