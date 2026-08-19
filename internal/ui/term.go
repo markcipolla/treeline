@@ -2,28 +2,33 @@ package ui
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
-	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	tea "github.com/charmbracelet/bubbletea"
+	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/charmbracelet/x/vt"
 	"github.com/creack/pty"
-	"github.com/hinshun/vt10x"
-	"github.com/mattn/go-runewidth"
 )
 
 // claudeTermMsg signals fresh output from a claude terminal session.
 type claudeTermMsg struct{ dir string }
 
 // claudeSession is an interactive `claude` running in a pty, mirrored into
-// the claude pane through a vt10x virtual terminal.
+// the claude pane through a virtual terminal with scrollback.
 type claudeSession struct {
 	dir    string
 	cmd    *exec.Cmd
 	pty    *os.File
-	vt     vt10x.Terminal
+	mu     sync.Mutex // guards em and scroll
+	em     *vt.Emulator
+	rows   int
+	cols   int
+	scroll int // lines scrolled up into history; 0 = live
 	notify chan struct{}
 	exited atomic.Bool
 }
@@ -45,37 +50,29 @@ func startClaudeSession(dir string, cols, rows int) (*claudeSession, error) {
 	if err != nil {
 		return nil, fmt.Errorf("starting claude: %w", err)
 	}
+	em := vt.NewEmulator(cols, rows)
+	em.SetScrollbackSize(5000)
 	s := &claudeSession{
 		dir:    dir,
 		cmd:    cmd,
 		pty:    p,
-		vt:     vt10x.New(vt10x.WithSize(cols, rows)),
+		em:     em,
+		cols:   cols,
+		rows:   rows,
 		notify: make(chan struct{}, 1),
 	}
+	// pty → emulator
 	go func() {
 		buf := make([]byte, 8192)
-		var pending []byte
 		for {
 			n, err := p.Read(buf)
 			if n > 0 {
-				data := append(pending, buf[:n]...)
-				complete := data
-				pending = nil
-				// hold back a trailing unfinished escape sequence so the
-				// sanitizer sees whole sequences (unless it grows absurd)
-				if i := incompleteEscAt(data); i >= 0 && len(data)-i < 512 {
-					complete = data[:i]
-					pending = append([]byte(nil), data[i:]...)
-				}
-				if len(complete) > 0 {
-					s.vt.Write(privateCSI.ReplaceAll(complete, nil)) // vt10x locks internally
-					s.ping()
-				}
+				s.mu.Lock()
+				s.em.Write(buf[:n])
+				s.mu.Unlock()
+				s.ping()
 			}
 			if err != nil {
-				if len(pending) > 0 {
-					s.vt.Write(privateCSI.ReplaceAll(pending, nil))
-				}
 				s.exited.Store(true)
 				s.ping()
 				_ = cmd.Wait()
@@ -83,53 +80,11 @@ func startClaudeSession(dir string, cols, rows int) (*claudeSession, error) {
 			}
 		}
 	}()
+	// emulator responses (device attributes, cursor reports, …) → pty
+	go func() {
+		_, _ = io.Copy(p, em)
+	}()
 	return s, nil
-}
-
-// privateCSI matches <, > and = prefixed CSI sequences (kitty keyboard
-// protocol, XTVERSION, modifyOtherKeys, …). vt10x doesn't know the prefixes
-// and misreads e.g. the final "u" of "ESC[<u" as an ANSI.SYS cursor restore,
-// homing the cursor and scrambling claude's relative-movement redraws.
-var privateCSI = regexp.MustCompile("\x1b\\[[<>=][0-9;]*[a-zA-Z@`~]")
-
-// incompleteEscAt returns the index of a trailing unterminated escape
-// sequence, or -1 when the buffer ends cleanly.
-func incompleteEscAt(b []byte) int {
-	i := len(b) - 1
-	for ; i >= 0 && len(b)-i < 512; i-- {
-		if b[i] == 0x1b {
-			break
-		}
-	}
-	if i < 0 || b[i] != 0x1b {
-		return -1
-	}
-	rest := b[i+1:]
-	if len(rest) == 0 {
-		return i // bare ESC at the end
-	}
-	switch rest[0] {
-	case '[': // CSI: complete once a final byte 0x40–0x7e appears
-		for _, c := range rest[1:] {
-			if c >= 0x40 && c <= 0x7e {
-				return -1
-			}
-		}
-		return i
-	case ']': // OSC: terminated by BEL or ST (ESC \)
-		for j := 1; j < len(rest); j++ {
-			if rest[j] == 0x07 || (rest[j] == '\\' && rest[j-1] == 0x1b) {
-				return -1
-			}
-		}
-		return i
-	case '(', ')': // charset designation: one more byte
-		if len(rest) >= 2 {
-			return -1
-		}
-		return i
-	}
-	return -1 // two-byte escape, already complete
 }
 
 func (s *claudeSession) ping() {
@@ -151,8 +106,16 @@ func (s *claudeSession) resize(cols, rows int) {
 	if cols < 20 || rows < 5 {
 		return
 	}
+	s.mu.Lock()
+	if cols == s.cols && rows == s.rows {
+		s.mu.Unlock()
+		return
+	}
+	s.cols, s.rows = cols, rows
+	s.scroll = 0
+	s.em.Resize(cols, rows)
+	s.mu.Unlock()
 	_ = pty.Setsize(s.pty, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
-	s.vt.Resize(cols, rows)
 }
 
 func (s *claudeSession) close() {
@@ -160,79 +123,104 @@ func (s *claudeSession) close() {
 		_ = s.cmd.Process.Kill()
 	}
 	_ = s.pty.Close()
+	_ = s.em.Close()
 }
 
-// render draws the virtual terminal as ANSI-styled lines sized to the grid.
-func (s *claudeSession) render(focused bool) string {
-	s.vt.Lock()
-	defer s.vt.Unlock()
-	cols, rows := s.vt.Size()
-	cur := s.vt.Cursor()
-	showCursor := focused && s.vt.CursorVisible() && !s.exited.Load()
+// scrollBy moves the view into history (positive = older) and returns the
+// resulting offset.
+func (s *claudeSession) scrollBy(delta int) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.scroll += delta
+	if max := s.em.ScrollbackLen(); s.scroll > max {
+		s.scroll = max
+	}
+	if s.scroll < 0 {
+		s.scroll = 0
+	}
+	return s.scroll
+}
 
+func (s *claudeSession) scrollLive() {
+	s.mu.Lock()
+	s.scroll = 0
+	s.mu.Unlock()
+}
+
+func (s *claudeSession) scrolled() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.scroll
+}
+
+// render draws the terminal: the live screen, or a window sliding into the
+// scrollback when scrolled up.
+func (s *claudeSession) render(focused bool) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	screen := strings.Split(s.em.Render(), "\n")
+	for len(screen) < s.rows {
+		screen = append(screen, "")
+	}
+	screen = screen[:s.rows]
+
+	if s.scroll == 0 {
+		if focused && !s.exited.Load() {
+			cur := s.em.CursorPosition()
+			if cur.Y >= 0 && cur.Y < s.rows {
+				screen[cur.Y] = s.renderLineWithCursor(cur.Y, cur.X)
+			}
+		}
+		return strings.Join(screen, "\n")
+	}
+
+	sbLen := s.em.ScrollbackLen()
+	k := s.scroll
+	if k > sbLen {
+		k = sbLen
+	}
+	clip := maxWidthStyle(s.cols)
+	lines := make([]string, 0, s.rows)
+	for i := sbLen - k; i < sbLen && len(lines) < s.rows; i++ {
+		lines = append(lines, clip.Render(s.em.Scrollback().Line(i).Render()))
+	}
+	for i := 0; len(lines) < s.rows && i < len(screen); i++ {
+		lines = append(lines, screen[i])
+	}
+	for len(lines) < s.rows {
+		lines = append(lines, "")
+	}
+	return strings.Join(lines, "\n")
+}
+
+// renderLineWithCursor rebuilds one screen row from cells, reversing the
+// cell under the cursor so it reads as a block cursor.
+func (s *claudeSession) renderLineWithCursor(y, curX int) string {
 	var b strings.Builder
-	for y := 0; y < rows; y++ {
-		if y > 0 {
-			b.WriteByte('\n')
+	for x := 0; x < s.cols; {
+		c := s.em.CellAt(x, y)
+		if c == nil {
+			b.WriteString(" ")
+			x++
+			continue
 		}
-		last := ""
-		skip := false
-		for x := 0; x < cols; x++ {
-			if skip { // second cell of a wide rune
-				skip = false
-				continue
-			}
-			g := s.vt.Cell(x, y)
-			sgr := sgrFor(g, showCursor && x == cur.X && y == cur.Y)
-			if sgr != last {
-				b.WriteString("\x1b[0m" + sgr)
-				last = sgr
-			}
-			ch := g.Char
-			if ch == 0 {
-				ch = ' '
-			}
-			b.WriteRune(ch)
-			if runewidth.RuneWidth(ch) == 2 {
-				skip = true
-			}
+		st := c.Style
+		if x == curX {
+			st.Attrs ^= uv.AttrReverse
 		}
-		b.WriteString("\x1b[0m")
+		content := c.Content
+		if content == "" {
+			content = " "
+		}
+		b.WriteString(st.String() + content + "\x1b[0m")
+		if c.Width > 1 {
+			x += c.Width
+		} else {
+			x++
+		}
 	}
 	return b.String()
-}
-
-// sgrFor builds the escape prefix for one cell. vt10x attr bits: reverse=1,
-// underline=2, bold=4; colors <256 are palette, otherwise packed RGB.
-func sgrFor(g vt10x.Glyph, cursor bool) string {
-	var p []string
-	if g.Mode&1 != 0 || cursor {
-		p = append(p, "7")
-	}
-	if g.Mode&2 != 0 {
-		p = append(p, "4")
-	}
-	if g.Mode&4 != 0 {
-		p = append(p, "1")
-	}
-	if c := g.FG; c != vt10x.DefaultFG && c != vt10x.DefaultCursor {
-		if c < 256 {
-			p = append(p, fmt.Sprintf("38;5;%d", c))
-		} else if c < 1<<24 {
-			p = append(p, fmt.Sprintf("38;2;%d;%d;%d", c>>16&0xff, c>>8&0xff, c&0xff))
-		}
-	}
-	if c := g.BG; c != vt10x.DefaultBG {
-		if c < 256 {
-			p = append(p, fmt.Sprintf("48;5;%d", c))
-		} else if c < 1<<24 {
-			p = append(p, fmt.Sprintf("48;2;%d;%d;%d", c>>16&0xff, c>>8&0xff, c&0xff))
-		}
-	}
-	if len(p) == 0 {
-		return ""
-	}
-	return "\x1b[" + strings.Join(p, ";") + "m"
 }
 
 // encodeKey turns a bubbletea key event into the bytes a pty expects.

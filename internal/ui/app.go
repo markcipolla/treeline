@@ -1368,6 +1368,7 @@ func (m Model) keyClaude(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if b := encodeKey(k); len(b) > 0 {
+		s.scrollLive() // typing snaps back to the live screen
 		s.pty.Write(b)
 	}
 	return m, nil
@@ -1516,7 +1517,14 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		switch m.screen {
 		case scrMain:
 			if m.threePane() && m.pane == paneClaude {
-				return m, nil // the embedded claude owns its own scrollback
+				if s := m.terms[m.claudeDir()]; s != nil {
+					if up {
+						s.scrollBy(3)
+					} else {
+						s.scrollBy(-3)
+					}
+				}
+				return m, nil
 			}
 			if m.threePane() && m.pane == paneDiff {
 				switch m.gitMode {
