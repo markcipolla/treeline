@@ -219,6 +219,9 @@ func (m Model) viewPanels() string {
 		claudeBody = s.render(false) // frozen last frame
 	default:
 		claudeBody = s.render(m.pane == paneClaude)
+		if n := s.scrolled(); n > 0 {
+			claudeTitle += fmt.Sprintf(" · ↑%d — wheel down for live", n)
+		}
 	}
 	if m.pane == paneClaude {
 		if s := m.terms[dir]; s != nil && s.exited.Load() {
