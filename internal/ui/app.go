@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/spinner"
@@ -108,7 +109,8 @@ type Model struct {
 	loadingDiff bool
 
 	// git pane: file picker, hunk staging, commit log
-	gitFor      string // directory the pane operates on
+	gitFor      string    // directory the pane operates on
+	gitFreshAt  time.Time // last auto-refresh; throttles claude-driven reloads
 	gitMode     int
 	gitUnstaged []gitx.FileStatus
 	gitStaged   []gitx.FileStatus
@@ -402,7 +404,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if s == nil {
 			return m, nil
 		}
-		return m, waitClaudeTerm(s) // re-arm; the view reads the vt directly
+		cmds := []tea.Cmd{waitClaudeTerm(s)} // re-arm; the view reads the vt directly
+		// claude edits files as it works; keep the git pane current.
+		// Throttled, not debounced — claude's UI animates continuously.
+		if msg.dir == m.gitFor && time.Since(m.gitFreshAt) > 3*time.Second {
+			m.gitFreshAt = time.Now()
+			cmds = append(cmds, m.reloadGit(), m.loadSelectedFileDiff(), loadWorktreesCmd(m.root))
+		}
+		return m, tea.Batch(cmds...)
 
 	case issueFetchedMsg:
 		m.fetchingIssue = false
@@ -1247,6 +1256,10 @@ func (m Model) focusPane(p int) (tea.Model, tea.Cmd) {
 	if p == paneClaude {
 		return m, m.ensureTerm()
 	}
+	if p == paneDiff {
+		m.gitFreshAt = time.Now()
+		return m, tea.Batch(m.reloadGit(), m.loadSelectedFileDiff())
+	}
 	return m, nil
 }
 
@@ -1617,6 +1630,16 @@ func (m Model) handleClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 		switch {
 		case m.clicked(msg, "pane:claude"):
+			// a click on a URL inside the terminal opens it
+			if s := m.terms[m.claudeDir()]; s != nil {
+				z := m.zones.Get("pane:claude")
+				x, y := z.Pos(msg)
+				// pane chrome: border column, then border+title+rule rows
+				if url := s.urlAt(x-1, y-3); url != "" {
+					_ = openBrowser(url)
+					return m, nil
+				}
+			}
 			return m.focusPane(paneClaude)
 		case m.clicked(msg, "pane:diff"):
 			return m.focusPane(paneDiff)
