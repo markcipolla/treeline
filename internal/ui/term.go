@@ -5,9 +5,11 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 	uv "github.com/charmbracelet/ultraviolet"
@@ -192,6 +194,66 @@ func (s *claudeSession) render(focused bool) string {
 		lines = append(lines, "")
 	}
 	return strings.Join(lines, "\n")
+}
+
+var urlRE = regexp.MustCompile(`https?://[^\s"'<>]+`)
+
+// lineAt returns the plain text of the visual row currently shown at y,
+// column-aligned (wide cells are padded) so x positions match the display.
+func (s *claudeSession) lineAt(y int) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.scroll > 0 {
+		sbLen := s.em.ScrollbackLen()
+		k := s.scroll
+		if k > sbLen {
+			k = sbLen
+		}
+		idx := sbLen - k + y
+		if idx < sbLen {
+			if idx < 0 {
+				return ""
+			}
+			return s.em.Scrollback().Line(idx).String()
+		}
+		y = idx - sbLen // remaining rows come from the live screen top
+	}
+	if y < 0 || y >= s.rows {
+		return ""
+	}
+	var b strings.Builder
+	for x := 0; x < s.cols; {
+		c := s.em.CellAt(x, y)
+		if c == nil || c.Content == "" {
+			b.WriteString(" ")
+			x++
+			continue
+		}
+		b.WriteString(c.Content)
+		if c.Width > 1 { // pad so rune index keeps matching the column
+			b.WriteString(strings.Repeat(" ", c.Width-1))
+			x += c.Width
+		} else {
+			x++
+		}
+	}
+	return b.String()
+}
+
+// urlAt finds a URL under column x of the given visual row.
+func (s *claudeSession) urlAt(x, y int) string {
+	line := s.lineAt(y)
+	if line == "" {
+		return ""
+	}
+	for _, span := range urlRE.FindAllStringIndex(line, -1) {
+		start := utf8.RuneCountInString(line[:span[0]])
+		end := start + utf8.RuneCountInString(line[span[0]:span[1]])
+		if x >= start && x < end {
+			return strings.TrimRight(line[span[0]:span[1]], ".,;:!?")
+		}
+	}
+	return ""
 }
 
 // renderLineWithCursor rebuilds one screen row from cells, reversing the
