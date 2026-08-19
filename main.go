@@ -22,7 +22,7 @@ import (
 	"github.com/markcipolla/treeline/internal/ui"
 )
 
-var version = "0.1.0"
+var version = "0.2.0"
 
 const helpText = `treeline — git worktree manager with Linear integration
 
