@@ -112,6 +112,13 @@ func loadWorktreesCmd(root string) tea.Cmd {
 	}
 }
 
+// issuesTickMsg fires the periodic background refresh of Linear cards.
+type issuesTickMsg struct{}
+
+func issuesTickCmd() tea.Cmd {
+	return tea.Tick(30*time.Second, func(time.Time) tea.Msg { return issuesTickMsg{} })
+}
+
 func loadIssuesCmd(cfg *config.Config) tea.Cmd {
 	return func() tea.Msg {
 		token, err := freshToken(cfg)
