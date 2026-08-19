@@ -246,7 +246,7 @@ func (m Model) Close() {
 }
 
 func (m Model) Init() tea.Cmd {
-	cmds := []tea.Cmd{m.spinner.Tick, loadWorktreesCmd(m.root)}
+	cmds := []tea.Cmd{m.spinner.Tick, loadWorktreesCmd(m.root), issuesTickCmd()}
 	if m.cfg.Linear.Token().Usable() {
 		cmds = append(cmds, loadIssuesCmd(m.cfg))
 	}
@@ -275,12 +275,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshRows()
 		return m, tea.Batch(m.maybeLoadCI(), m.syncPanes())
 
+	case issuesTickMsg:
+		// silent background refresh of the cards, re-armed every 30s
+		cmds := []tea.Cmd{issuesTickCmd()}
+		if m.authed {
+			cmds = append(cmds, loadIssuesCmd(m.cfg))
+		}
+		return m, tea.Batch(cmds...)
+
 	case issuesMsg:
-		m.loadingIssues = false
 		if msg.err != nil {
-			m.err = msg.err
+			// only surface failures the user asked for; background
+			// refreshes retry in 30s anyway
+			if m.loadingIssues {
+				m.err = msg.err
+			}
+			m.loadingIssues = false
 			return m, nil
 		}
+		m.loadingIssues = false
 		m.viewer = msg.viewer
 		m.issues = msg.issues
 		m.refreshRows()
