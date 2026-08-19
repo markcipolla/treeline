@@ -584,14 +584,20 @@ func (m *Model) resize() {
 // setTableLayout sizes the issue table's columns for the given width.
 func (m *Model) setTableLayout(w, h int) {
 	pad := 3 // each cell: 1-char divider + 1 padding on both sides
+	w--      // renderTable appends a right edge to every row
 	keyW, priW, gitW, ciW := 10, 8, 10, 3
 	wtW := w * 22 / 100
 	if wtW < 14 {
 		wtW = 14
 	}
 	titleW := w - keyW - priW - gitW - ciW - wtW - 6*pad
-	if titleW < 16 {
-		titleW = 16
+	if titleW < 12 {
+		// give TITLE its floor back out of WORKTREE so the frame still fits
+		wtW -= 12 - titleW
+		titleW = 12
+		if wtW < 8 {
+			wtW = 8
+		}
 	}
 	m.table.SetColumns([]table.Column{
 		{Title: "KEY", Width: keyW},
