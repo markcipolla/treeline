@@ -149,7 +149,10 @@ func (m Model) viewMain() string {
 		case paneClaude:
 			bindings = []key.Binding{keyTermEsc}
 		case paneDiff:
-			bindings = []key.Binding{keyChoose, keyStage, keyHunks, keyLog, keyBranchD, keyBack}
+			bindings = []key.Binding{keyChoose, keyStage, keyHunks, keyCommitC, keyLog, keyBranchD, keyBack}
+			if m.gitMode == gitModeCommit {
+				bindings = []key.Binding{keyField, keyCommitGo, keyGenMsg, keyCancel}
+			}
 		}
 	}
 	if m.filtering {
