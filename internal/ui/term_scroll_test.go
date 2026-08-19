@@ -54,4 +54,18 @@ func TestScrollbackCapture(t *testing.T) {
 	if got := s.render(false); !strings.Contains(got, "line-40") {
 		t.Fatal("scrollLive did not return to the live screen")
 	}
+
+	// drag selection: anchor on one live row, extend to the next, and the
+	// extracted text spans both lines stream-style
+	sbLen := em.ScrollbackLen()
+	s.selPress(0, 0)
+	s.selDrag(6, 1)
+	text, moved := s.selRelease()
+	if !moved {
+		t.Fatal("drag did not register movement")
+	}
+	_ = sbLen
+	if !strings.Contains(text, "line-3") || !strings.Contains(text, "\n") {
+		t.Fatalf("selection text wrong: %q", text)
+	}
 }

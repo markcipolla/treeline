@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/lipgloss"
@@ -229,6 +230,9 @@ func (m Model) viewPanels() string {
 		} else {
 			claudeTitle += " · ctrl+q next pane"
 		}
+	}
+	if time.Now().Before(m.copiedUntil) {
+		claudeTitle += okStyle.Render(" · copied ✓")
 	}
 	center := m.zones.Mark("pane:claude",
 		pane(lw, bottomH, m.pane == paneClaude, claudeTitle, claudeBody))
