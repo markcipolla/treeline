@@ -96,10 +96,14 @@ func (m Model) viewHeader() string {
 }
 
 func (m Model) statusOrHelp(bindings []key.Binding) string {
-	if m.err != nil {
-		return errStyle.Render("✗ " + m.err.Error())
+	w := m.width - docStyle.GetHorizontalFrameSize()
+	if w < 20 {
+		w = 20
 	}
-	return m.help.ShortHelpView(bindings)
+	if m.err != nil {
+		return maxWidthStyle(w).Render(errStyle.Render("✗ " + m.err.Error()))
+	}
+	return maxWidthStyle(w).Render(m.help.ShortHelpView(bindings))
 }
 
 func (m Model) button(id, label string, primary bool) string {
@@ -179,8 +183,18 @@ func (m Model) viewPanels() string {
 			st, ts, rs = paneFocusStyle, paneTitleFocus, okStyle
 		}
 		rule := rs.Render(strings.Repeat("═", w-2))
-		return st.Width(w - 2).Height(h - 2).Render(
+		out := st.Width(w - 2).Height(h - 2).Render(
 			ts.Render(truncate(title, w-4)) + "\n" + rule + "\n" + body)
+		// join the title rule into the side borders: │═══│ → ╞═══╡
+		lines := strings.Split(out, "\n")
+		if len(lines) > 2 {
+			l := strings.Replace(lines[2], "│", "╞", 1)
+			if i := strings.LastIndex(l, "│"); i >= 0 {
+				l = l[:i] + "╡" + l[i+len("│"):]
+			}
+			lines[2] = l
+		}
+		return strings.Join(lines, "\n")
 	}
 
 	var top string

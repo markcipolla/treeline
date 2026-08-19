@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/lipgloss"
+
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/markcipolla/treeline/internal/config"
@@ -23,6 +25,8 @@ func TestViewSmoke(t *testing.T) {
 		m := New(cfg, t.TempDir())
 		mm, _ := m.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
 		model := mm.(Model)
+		model.authed = true // the unauth+loading summary line is allowed to be long
+		model.loadingWT, model.loadingIssues = false, false
 		model.issues = []linear.Issue{
 			{Identifier: "LAB-1", Title: "A test issue", State: "In Progress", StateType: "started", Assignee: "Sam"},
 			{Identifier: "LAB-2", Title: "Another one", State: "Backlog", StateType: "backlog"},
@@ -35,6 +39,14 @@ func TestViewSmoke(t *testing.T) {
 		for _, join := range []string{"┌", "┬", "┐", "├", "┤", "└", "┴", "┘"} {
 			if !strings.Contains(v, join) {
 				t.Fatalf("table frame missing %q at %dx%d", join, size[0], size[1])
+			}
+		}
+		// minimum column widths overflow toy terminals by design
+		if size[0] >= 80 {
+			for n, line := range strings.Split(v, "\n") {
+				if lw := lipgloss.Width(line); lw > size[0] {
+					t.Fatalf("line %d overflows: %d > %d cols", n, lw, size[0])
+				}
 			}
 		}
 		for pane := 0; pane < 3; pane++ {
