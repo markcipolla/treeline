@@ -654,7 +654,9 @@ func (m Model) gitPaneContent(w, h int) (string, string) {
 	for i := 0; i < listH; i++ {
 		b.WriteString(lwStyle.Render(left[i]) + sep + right[i] + "\n")
 	}
-	b.WriteString(metaStyle.Render(strings.Repeat("─", w)) + "\n")
+	// the column separator joins the rule under the picker
+	rule := strings.Repeat("─", lw+1) + "┴" + strings.Repeat("─", w-lw-2)
+	b.WriteString(metaStyle.Render(rule) + "\n")
 	if m.gitDiff == "" {
 		b.WriteString(dimStyle.Render("(no diff)"))
 	} else {

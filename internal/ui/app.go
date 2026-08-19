@@ -602,7 +602,8 @@ func (m *Model) setTableLayout(w, h int) {
 		{Title: "CI", Width: ciW},
 	})
 	m.table.SetWidth(w)
-	m.table.SetHeight(h)
+	// renderTable adds a top and bottom frame line around the widget
+	m.table.SetHeight(h - 2)
 }
 
 // refreshRows rebuilds the table: issues grouped by status (active work

@@ -2,6 +2,7 @@ package ui
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -27,8 +28,14 @@ func TestViewSmoke(t *testing.T) {
 			{Identifier: "LAB-2", Title: "Another one", State: "Backlog", StateType: "backlog"},
 		}
 		model.refreshRows()
-		if v := model.View(); v == "" {
+		v := model.View()
+		if v == "" {
 			t.Fatalf("empty view at %dx%d", size[0], size[1])
+		}
+		for _, join := range []string{"┌", "┬", "┐", "├", "┤", "└", "┴", "┘"} {
+			if !strings.Contains(v, join) {
+				t.Fatalf("table frame missing %q at %dx%d", join, size[0], size[1])
+			}
 		}
 		for pane := 0; pane < 3; pane++ {
 			mp, _ := model.focusPane(pane)

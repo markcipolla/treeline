@@ -473,12 +473,39 @@ var ansiRE = regexp.MustCompile("\x1b\\[[0-9;]*m")
 // renderTable post-processes the table view: the header rule gets a proper
 // "├" left edge, and group-header rows (marked "▸ ") become full-width rules
 // with the title inset, e.g. ├─ IN PROGRESS ──────┼──────────┼────
+// tableFrame builds the table's top/bottom border with joins matched to the
+// visible column widths: left, per-column dashes, join, …, right.
+func (m Model) tableFrame(left, join, right rune) string {
+	var b strings.Builder
+	b.WriteRune(left)
+	first := true
+	for _, c := range m.table.Columns() {
+		if c.Width <= 0 {
+			continue // hidden column (three-pane layout)
+		}
+		if !first {
+			b.WriteRune(join)
+		}
+		first = false
+		b.WriteString(strings.Repeat("─", c.Width+2))
+	}
+	b.WriteRune(right)
+	return metaStyle.Render(b.String())
+}
+
 func (m Model) renderTable() string {
+	totalW := 0
+	for _, c := range m.table.Columns() {
+		if c.Width > 0 {
+			totalW += c.Width + 3
+		}
+	}
 	lines := strings.Split(m.table.View(), "\n")
 	if len(lines) > 1 {
 		lines[1] = strings.Replace(lines[1], "┼", "├", 1)
 	}
 	tintedDivider := metaStyle.Render("│")
+	rightEdge := tintedDivider
 	for i, line := range lines {
 		plain := ansiRE.ReplaceAllString(line, "")
 		if idx := strings.Index(plain, "▸ "); idx >= 0 && strings.Trim(plain[:idx], "│ ") == "" {
@@ -487,17 +514,32 @@ func (m Model) renderTable() string {
 			if j := strings.IndexRune(title, '│'); j >= 0 {
 				title = title[:j]
 			}
-			lines[i] = m.groupDividerLine(strings.TrimSpace(title))
+			lines[i] = m.groupDividerLine(strings.TrimSpace(title)) + metaStyle.Render("┤")
+			continue
+		}
+		if i == 1 { // header rule meets the right edge with a join
+			lines[i] = line + metaStyle.Render("┤")
+			continue
+		}
+		if strings.TrimSpace(plain) == "" { // viewport filler below the rows
+			pad := totalW - 1
+			if pad < 0 {
+				pad = 0
+			}
+			lines[i] = tintedDivider + strings.Repeat(" ", pad) + rightEdge
 			continue
 		}
 		// Cell dividers are rendered uncolored so the Selected row style
 		// isn't cut off by an embedded ANSI reset; tint them subtle on the
 		// remaining (unstyled) rows. The selected row keeps accent dividers.
 		if i > 1 && !strings.Contains(line, "\x1b") {
-			lines[i] = strings.ReplaceAll(line, "│", tintedDivider)
+			line = strings.ReplaceAll(line, "│", tintedDivider)
 		}
+		lines[i] = line + rightEdge
 	}
-	return strings.Join(lines, "\n")
+	return m.tableFrame('┌', '┬', '┐') + "\n" +
+		strings.Join(lines, "\n") + "\n" +
+		m.tableFrame('└', '┴', '┘')
 }
 
 // groupDividerLine draws a rule across all columns, intersections aligned
