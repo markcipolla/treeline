@@ -2126,6 +2126,11 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			}
 			if m.threePane() && (over == paneClaude || over == paneTerm) {
 				if s := m.paneSession(over); s != nil {
+					// a full-screen program does its own scrolling: it leaves
+					// nothing in our scrollback, so the wheel belongs to it
+					if x, y, ok := m.paneBodyPos(over, msg); ok && s.sendWheel(up, x, y) {
+						return m, nil
+					}
 					if up {
 						s.scrollBy(3)
 					} else {
@@ -2244,6 +2249,31 @@ func (m Model) paneUnder(msg tea.MouseMsg) (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+// paneZoneID is the zone a pane's inside is marked with.
+func paneZoneID(pane int) string {
+	switch pane {
+	case paneClaude:
+		return "pane:claude"
+	case paneTerm:
+		return "pane:term"
+	case paneDiff:
+		return "pane:diff"
+	}
+	return "pane:issues"
+}
+
+// paneBodyPos converts a mouse event into a cell of a terminal pane's body:
+// the zone covers the pane's inside, so the title and its rule sit above the
+// body and a column of padding to its left.
+func (m Model) paneBodyPos(pane int, msg tea.MouseMsg) (x, y int, ok bool) {
+	z := m.zones.Get(paneZoneID(pane))
+	if z == nil || z.IsZero() {
+		return 0, 0, false
+	}
+	cx, cy := z.Pos(msg)
+	return cx - 1, cy - 2, true
 }
 
 // gitBodyPos converts a mouse event into a position in the git pane's body:
