@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/markcipolla/treeline/internal/config"
 	"github.com/markcipolla/treeline/internal/tmux"
 )
 
@@ -115,4 +116,50 @@ func TestUnpersistedSessionDiesOnClose(t *testing.T) {
 		return // process reaped
 	}
 	t.Fatalf("process %d outlived its pane", pid)
+}
+
+// TestDropSessionsKillsThePersistedWork covers removing a worktree: its
+// sessions must be ended rather than left detached in a directory that is
+// about to disappear — including one this Model never opened, left running by
+// an earlier treeline.
+func TestDropSessionsKillsThePersistedWork(t *testing.T) {
+	if !tmux.Available() {
+		t.Skip("tmux not installed")
+	}
+	restore := tmux.Socket
+	tmux.Socket = "treeline-test"
+	t.Cleanup(func() { _ = tmux.KillAll(); tmux.Socket = restore })
+
+	dir := t.TempDir()
+	// the pane this run owns…
+	shell, err := startProgramSession(dir, 40, 10, true, "shell", "sh", "-c", "echo MARKER; sleep 60")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, shell, "MARKER")
+	// …and one from an earlier run, which the Model knows nothing about
+	orphan, err := startProgramSession(dir, 40, 10, true, "claude", "sh", "-c", "echo MARKER; sleep 60")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, orphan, "MARKER")
+	orphan.close() // detached, like a treeline that has quit
+
+	m := Model{
+		cfg:    &config.Config{},
+		terms:  map[string]*claudeSession{},
+		shells: map[string]*claudeSession{dir: shell},
+	}
+	m.dropSessions(dir)
+
+	if _, ok := m.shells[dir]; ok {
+		t.Error("the pane should be dropped from the model")
+	}
+	left, err := tmux.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(left) != 0 {
+		t.Errorf("sessions survived the worktree: %+v", left)
+	}
 }

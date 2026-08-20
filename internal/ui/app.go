@@ -182,7 +182,10 @@ type Model struct {
 	createdPath   string
 	createdBranch string
 	jumpPath      string
-	err           error
+	// pendSelect is a worktree we want selected but which the worktree list
+	// hasn't caught up with yet (a just-created one); worktreesMsg retries it.
+	pendSelect string
+	err        error
 }
 
 func New(cfg *config.Config, root string) Model {
@@ -400,7 +403,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.wts = msg.wts
 		m.refreshRows()
-		return m, tea.Batch(m.maybeLoadCI(), m.syncPanes(), m.syncExtras(false))
+		var focus tea.Cmd
+		if m.pendSelect != "" && m.selectWorktree(m.pendSelect) {
+			m.pendSelect = ""
+			var mm tea.Model
+			mm, focus = m.focusPane(paneClaude)
+			m = mm.(Model)
+		}
+		return m, tea.Batch(m.maybeLoadCI(), m.syncPanes(), m.syncExtras(false), focus)
 
 	case issuesTickMsg:
 		// silent background refresh of the cards, re-armed every 30s
@@ -971,14 +981,16 @@ func (m *Model) settleCursor(preferUp bool) {
 	}
 }
 
-// selectWorktree moves the table cursor to the row showing this worktree.
-func (m *Model) selectWorktree(path string) {
+// selectWorktree moves the table cursor to the row showing this worktree,
+// reporting whether a row for it exists yet.
+func (m *Model) selectWorktree(path string) bool {
 	for i, ref := range m.refs {
 		if ref.wt != nil && ref.wt.Path == path {
 			m.table.SetCursor(i)
-			return
+			return true
 		}
 	}
+	return false
 }
 
 func (m Model) selectedRef() rowRef {
@@ -1003,14 +1015,7 @@ func (m *Model) clearFilter() {
 // worktree; otherwise start the create-branch flow.
 func (m Model) openIssue(is linear.Issue) (tea.Model, tea.Cmd) {
 	if wt := m.worktreeForKey(is.Identifier); wt != nil {
-		if m.threePane() {
-			m.screen = scrMain
-			m.selectWorktree(wt.Path)
-			sync := m.syncPanes()
-			mm, cmd := m.focusPane(paneClaude)
-			return mm, tea.Batch(cmd, sync)
-		}
-		return m.jumpTo(wt.Path)
+		return m.openWorktree(wt.Path)
 	}
 	if root, local, remote := m.branchForKey(is.Identifier); local != "" {
 		m.screen = scrCreating
@@ -1200,6 +1205,27 @@ func (m Model) openDetail() (tea.Model, tea.Cmd) {
 	m.viewport.GotoTop()
 	m.screen = scrDetail
 	return m, nil
+}
+
+// openWorktree opens a worktree the way the layout allows: in the panel
+// layout it selects the worktree and hands focus to the claude pane so the
+// card can be worked in place, otherwise it quits so the shell wrapper cd's
+// into the directory. "o" always jumps out to the shell regardless.
+func (m Model) openWorktree(path string) (tea.Model, tea.Cmd) {
+	if !m.threePane() {
+		return m.jumpTo(path)
+	}
+	m.screen = scrMain
+	if !m.selectWorktree(path) {
+		// freshly created: loadWorktrees is still in flight, so leave the
+		// cursor alone rather than pointing the panes at the wrong worktree
+		// (claudeDir falls back to the repo root) and retry on worktreesMsg.
+		m.pendSelect = path
+		return m, nil
+	}
+	sync := m.syncPanes()
+	mm, cmd := m.focusPane(paneClaude)
+	return mm, tea.Batch(cmd, sync)
 }
 
 func (m Model) jumpTo(path string) (tea.Model, tea.Cmd) {
@@ -1823,7 +1849,7 @@ func (m Model) keyEditBranch(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) keyCreated(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch k.String() {
 	case "enter":
-		return m.jumpTo(m.createdPath)
+		return m.openWorktree(m.createdPath)
 	case "esc", "q":
 		m.screen = scrMain
 		return m, nil
@@ -2134,7 +2160,7 @@ func (m Model) handleClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	case scrCreated:
 		switch {
 		case m.clicked(msg, "btn:jump"):
-			return m.jumpTo(m.createdPath)
+			return m.openWorktree(m.createdPath)
 		case m.clicked(msg, "btn:back"):
 			m.screen = scrMain
 		}
