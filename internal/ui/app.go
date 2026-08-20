@@ -776,7 +776,9 @@ func (m *Model) resize() {
 
 	if m.threePane() {
 		topH, bottomH := m.panelHeights()
-		m.setTableLayout(w-2, topH-4) // borders + pane title + title rule
+		// the grid is the pane: full width, and only the top border, the
+		// title and the title rule sit above it
+		m.setTableLayout(w, topH-2)
 		lw := w / 2
 		rw := w - lw
 		inner := bottomH - 4 // borders + pane title + title rule
