@@ -214,6 +214,29 @@ func searchIssuesCmd(cfg *config.Config, raw string, seq int) tea.Cmd {
 	}
 }
 
+// extraIssuesMsg carries cards fetched because a worktree branch references
+// them even though they aren't assigned to the viewer (e.g. PR reviews).
+type extraIssuesMsg struct{ issues []linear.Issue }
+
+func fetchExtraIssuesCmd(cfg *config.Config, keys []string) tea.Cmd {
+	return func() tea.Msg {
+		token, err := freshToken(cfg)
+		if err != nil {
+			return extraIssuesMsg{}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		c := linear.NewClient(token)
+		var out []linear.Issue
+		for _, k := range keys {
+			if is, err := c.Issue(ctx, k); err == nil {
+				out = append(out, *is)
+			}
+		}
+		return extraIssuesMsg{issues: out}
+	}
+}
+
 func fetchIssueCmd(cfg *config.Config, key string) tea.Cmd {
 	return func() tea.Msg {
 		token, err := freshToken(cfg)

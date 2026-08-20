@@ -106,8 +106,10 @@ type Model struct {
 	loadingCI     bool
 	authed        bool
 	viewer        linear.Viewer
-	linearBusy    bool // a card fetch is in flight (incl. background ticks)
-	linearFail    bool // the most recent fetch failed
+	linearBusy    bool           // a card fetch is in flight (incl. background ticks)
+	linearFail    bool           // the most recent fetch failed
+	extraIssues   []linear.Issue // cards referenced by worktrees but not assigned
+	extraFetching bool
 
 	// create flow
 	pendKey     string // issue key like LMAP-142; "" for free-form branches
@@ -314,6 +316,36 @@ func (m Model) repoFor(root string) repoEntry {
 	return repoEntry{name: filepath.Base(root), path: root, base: "HEAD"}
 }
 
+// syncExtras fetches cards referenced by worktree branches that aren't in
+// the assigned list. all=true also refreshes ones already fetched.
+func (m *Model) syncExtras(all bool) tea.Cmd {
+	if !m.authed || m.extraFetching {
+		return nil
+	}
+	known := map[string]bool{}
+	for _, is := range m.issues {
+		known[is.Identifier] = true
+	}
+	if !all {
+		for _, is := range m.extraIssues {
+			known[is.Identifier] = true
+		}
+	}
+	var keys []string
+	seen := map[string]bool{}
+	for _, wt := range m.wts {
+		if k := issueKeyFromBranch(wt.Branch); k != "" && !known[k] && !seen[k] {
+			seen[k] = true
+			keys = append(keys, k)
+		}
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	m.extraFetching = true
+	return fetchExtraIssuesCmd(m.cfg, keys)
+}
+
 // loadWorktrees lists worktrees across every operating repo.
 func (m Model) loadWorktrees() tea.Cmd {
 	paths := make([]string, len(m.repos))
@@ -364,7 +396,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.wts = msg.wts
 		m.refreshRows()
-		return m, tea.Batch(m.maybeLoadCI(), m.syncPanes())
+		return m, tea.Batch(m.maybeLoadCI(), m.syncPanes(), m.syncExtras(false))
 
 	case issuesTickMsg:
 		// silent background refresh of the cards, re-armed every 30s
@@ -391,7 +423,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewer = msg.viewer
 		m.issues = msg.issues
 		m.refreshRows()
-		return m, nil
+		return m, m.syncExtras(true) // also re-fetch review cards so they stay fresh
 
 	case ciMsg:
 		m.loadingCI = false
@@ -520,6 +552,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, m.reloadGit(), m.loadSelectedFileDiff(), m.loadWorktrees())
 		}
 		return m, tea.Batch(cmds...)
+
+	case extraIssuesMsg:
+		m.extraFetching = false
+		byID := map[string]linear.Issue{}
+		for _, is := range m.extraIssues {
+			byID[is.Identifier] = is
+		}
+		for _, is := range msg.issues {
+			byID[is.Identifier] = is
+		}
+		// keep only cards a worktree still references
+		m.extraIssues = m.extraIssues[:0]
+		seen := map[string]bool{}
+		for _, wt := range m.wts {
+			k := issueKeyFromBranch(wt.Branch)
+			if is, ok := byID[k]; ok && !seen[k] {
+				seen[k] = true
+				m.extraIssues = append(m.extraIssues, is)
+			}
+		}
+		m.refreshRows()
+		return m, nil
 
 	case issueFetchedMsg:
 		m.fetchingIssue = false
@@ -761,9 +815,22 @@ func (m *Model) setTableLayout(w, h int) {
 func (m *Model) refreshRows() {
 	q := strings.ToLower(strings.TrimSpace(m.filterInput.Value()))
 
-	// link worktrees to issues via the issue key in the branch name
-	issueKeys := make(map[string]bool, len(m.issues))
+	// assigned cards plus ones worktrees reference (e.g. PR reviews)
+	all := make([]linear.Issue, 0, len(m.issues)+len(m.extraIssues))
+	all = append(all, m.issues...)
+	assigned := make(map[string]bool, len(m.issues))
 	for _, is := range m.issues {
+		assigned[is.Identifier] = true
+	}
+	for _, is := range m.extraIssues {
+		if !assigned[is.Identifier] {
+			all = append(all, is)
+		}
+	}
+
+	// link worktrees to issues via the issue key in the branch name
+	issueKeys := make(map[string]bool, len(all))
+	for _, is := range all {
 		issueKeys[is.Identifier] = true
 	}
 	linked := map[string]*gitx.Worktree{}
@@ -786,8 +853,8 @@ func (m *Model) refreshRows() {
 	}
 	var groups []*group
 	byName := map[string]*group{}
-	for i := range m.issues {
-		is := &m.issues[i]
+	for i := range all {
+		is := &all[i]
 		wt := linked[is.Identifier]
 		if q != "" && !strings.Contains(issueHaystack(*is, wt, m.root), q) {
 			continue
