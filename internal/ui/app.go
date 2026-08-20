@@ -2118,17 +2118,25 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		up := msg.Button == tea.MouseButtonWheelUp
 		switch m.screen {
 		case scrMain:
-			if m.threePane() && (m.pane == paneClaude || m.pane == paneTerm) {
-				if s := m.paneSession(m.pane); s != nil {
+			// the wheel works the pane under the pointer, focused or not —
+			// scrolling claude's scrollback should not need a ctrl+q first.
+			// Outside the panels it falls back to the focused pane.
+			over := m.pane
+			if p, ok := m.paneUnder(msg); ok {
+				over = p
+			}
+			if m.threePane() && (over == paneClaude || over == paneTerm) {
+				if s := m.paneSession(over); s != nil {
 					if up {
 						s.scrollBy(3)
 					} else {
 						s.scrollBy(-3)
 					}
+					return m, nil
 				}
-				return m, nil
+				// an empty pane has no scrollback: move the cards instead
 			}
-			if m.threePane() && m.overGitPane(msg) {
+			if m.threePane() && over == paneDiff {
 				m.gitSel.clear()
 				switch m.gitMode {
 				case gitModeFiles:
@@ -2219,6 +2227,28 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 func (m Model) overGitPane(msg tea.MouseMsg) bool {
 	z := m.zones.Get("pane:diff")
 	return z != nil && !z.IsZero() && z.InBounds(msg)
+}
+
+// paneUnder reports which panel the pointer sits over, so the wheel can work
+// it without stealing focus from the pane the keyboard is in.
+func (m Model) paneUnder(msg tea.MouseMsg) (int, bool) {
+	if !m.threePane() {
+		return 0, false
+	}
+	for _, p := range []struct {
+		id   string
+		pane int
+	}{
+		{"pane:claude", paneClaude},
+		{"pane:diff", paneDiff},
+		{"pane:term", paneTerm},
+		{"pane:issues", paneIssues},
+	} {
+		if z := m.zones.Get(p.id); z != nil && !z.IsZero() && z.InBounds(msg) {
+			return p.pane, true
+		}
+	}
+	return 0, false
 }
 
 // gitBodyPos converts a mouse event into a position in the git pane's body:
