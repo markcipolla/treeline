@@ -298,13 +298,15 @@ func rememberRepo(cfg *config.Config, root string) {
 		return
 	}
 	name := filepath.Base(root)
-	if cfg.Repos[name] == root {
+	entry := cfg.Repos[name]
+	if entry.Path == root {
 		return
 	}
 	if cfg.Repos == nil {
-		cfg.Repos = map[string]string{}
+		cfg.Repos = map[string]config.RepoConfig{}
 	}
-	cfg.Repos[name] = root
+	entry.Path = root // keep any setup/cleanup scripts the entry carries
+	cfg.Repos[name] = entry
 	if err := cfg.Save(); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not save config: %v\n", err)
 	}
@@ -314,8 +316,8 @@ func rememberRepo(cfg *config.Config, root string) {
 // the remembered primary checkouts.
 func pickRepo(cfg *config.Config) string {
 	names := make([]string, 0, len(cfg.Repos))
-	for n, path := range cfg.Repos {
-		if _, err := gitx.RepoRoot(path); err == nil {
+	for n, rc := range cfg.Repos {
+		if _, err := gitx.RepoRoot(rc.Path); err == nil {
 			names = append(names, n)
 		}
 	}
@@ -324,12 +326,12 @@ func pickRepo(cfg *config.Config) string {
 		fatal("not inside a git repository — run treeline from inside a repo once so it can remember it")
 	}
 	if len(names) == 1 {
-		fmt.Println("Using " + names[0] + " (" + cfg.Repos[names[0]] + ")")
-		return cfg.Repos[names[0]]
+		fmt.Println("Using " + names[0] + " (" + cfg.Repos[names[0]].Path + ")")
+		return cfg.Repos[names[0]].Path
 	}
 	fmt.Println("Not inside a git repository. Pick one:")
 	for i, n := range names {
-		fmt.Printf("  %d) %-16s %s\n", i+1, n, cfg.Repos[n])
+		fmt.Printf("  %d) %-16s %s\n", i+1, n, cfg.Repos[n].Path)
 	}
 	fmt.Printf("Choose [1-%d]: ", len(names))
 	in := bufio.NewReader(os.Stdin)
@@ -337,7 +339,7 @@ func pickRepo(cfg *config.Config) string {
 	if err != nil || choice < 1 || choice > len(names) {
 		fatal("no repository chosen")
 	}
-	return cfg.Repos[names[choice-1]]
+	return cfg.Repos[names[choice-1]].Path
 }
 
 func readLine(in *bufio.Reader) string {

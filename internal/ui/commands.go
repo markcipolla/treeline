@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -38,10 +40,12 @@ type createdMsg struct {
 	path       string
 	branchName string
 	err        error
+	root       string
 }
 
 type removedMsg struct {
-	err error
+	err  error
+	warn string
 }
 
 type authDoneMsg struct {
@@ -105,10 +109,59 @@ func loadDiffCmd(path, base string) tea.Cmd {
 	}
 }
 
-func loadWorktreesCmd(root string) tea.Cmd {
+func loadWorktreesCmd(roots []string) tea.Cmd {
 	return func() tea.Msg {
-		wts, err := gitx.List(root)
-		return worktreesMsg{wts: wts, err: err}
+		var all []gitx.Worktree
+		var firstErr error
+		for _, root := range roots {
+			wts, err := gitx.List(root)
+			if err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
+			}
+			all = append(all, wts...)
+		}
+		if all == nil && firstErr != nil {
+			return worktreesMsg{err: firstErr}
+		}
+		return worktreesMsg{wts: all}
+	}
+}
+
+// scriptDoneMsg reports a repo lifecycle script (setup) finishing.
+type scriptDoneMsg struct {
+	out string
+	err error
+}
+
+// runSetupCmd runs a repo's setup script inside a fresh worktree.
+func runSetupCmd(script, dir string, env []string) tea.Cmd {
+	return func() tea.Msg {
+		out, err := runScript(script, dir, env)
+		return scriptDoneMsg{out: out, err: err}
+	}
+}
+
+// runScript executes a lifecycle hook with sh -c in dir.
+func runScript(script, dir string, env []string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "sh", "-c", script)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), env...)
+	out, err := cmd.CombinedOutput()
+	return strings.TrimSpace(string(out)), err
+}
+
+// scriptEnv is the environment lifecycle hooks receive.
+func scriptEnv(repo, wtPath, branch, issue string) []string {
+	return []string{
+		"TREELINE_REPO=" + repo,
+		"TREELINE_WORKTREE=" + wtPath,
+		"TREELINE_BRANCH=" + branch,
+		"TREELINE_ISSUE=" + issue,
 	}
 }
 
@@ -176,13 +229,14 @@ func fetchIssueCmd(cfg *config.Config, key string) tea.Cmd {
 
 func createWorktreeCmd(root, name, base string) tea.Cmd {
 	return func() tea.Msg {
+		_ = gitx.EnsureExcluded(root)
 		if err := branch.ValidateRef(name); err != nil {
-			return createdMsg{err: err}
+			return createdMsg{root: root, err: err}
 		}
 		dir := filepath.Join(".worktrees", branch.DirFor(name))
 		abs := filepath.Join(root, dir)
 		if _, err := os.Stat(abs); err == nil {
-			return createdMsg{err: errPathExists(dir)}
+			return createdMsg{root: root, err: errPathExists(dir)}
 		}
 		var err error
 		if gitx.BranchExists(root, name) {
@@ -191,9 +245,9 @@ func createWorktreeCmd(root, name, base string) tea.Cmd {
 			err = gitx.Add(root, dir, name, base, true)
 		}
 		if err != nil {
-			return createdMsg{err: err}
+			return createdMsg{root: root, err: err}
 		}
-		return createdMsg{path: abs, branchName: name}
+		return createdMsg{root: root, path: abs, branchName: name}
 	}
 }
 
@@ -203,8 +257,19 @@ func (e pathExistsError) Error() string { return string(e) + " already exists" }
 
 func errPathExists(dir string) error { return pathExistsError(dir) }
 
-func removeWorktreeCmd(root string, wt gitx.Worktree, deleteBranch bool) tea.Cmd {
+func removeWorktreeCmd(wt gitx.Worktree, deleteBranch bool, cleanup, repoName string) tea.Cmd {
+	root := wt.Root
 	return func() tea.Msg {
+		var warn string
+		if cleanup != "" && !wt.Prunable {
+			// best-effort: a failing cleanup shouldn't strand the worktree
+			if out, err := runScript(cleanup, wt.Path, scriptEnv(repoName, wt.Path, wt.Branch, "")); err != nil {
+				warn = "cleanup script failed: " + err.Error()
+				if out != "" {
+					warn += " — " + lastLine(out)
+				}
+			}
+		}
 		if wt.Prunable {
 			// the directory is already gone; drop the stale registration
 			if err := gitx.Prune(root); err != nil {
@@ -218,7 +283,7 @@ func removeWorktreeCmd(root string, wt gitx.Worktree, deleteBranch bool) tea.Cmd
 				return removedMsg{err: err}
 			}
 		}
-		return removedMsg{}
+		return removedMsg{warn: warn}
 	}
 }
 
@@ -227,6 +292,11 @@ func authCmd(ctx context.Context, app linear.OAuthApp) tea.Cmd {
 		token, err := linear.Authorize(ctx, app, browser.Open)
 		return authDoneMsg{token: token, err: err}
 	}
+}
+
+func lastLine(s string) string {
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	return lines[len(lines)-1]
 }
 
 // openBrowser is a small alias so UI code doesn't import browser directly.

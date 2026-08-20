@@ -12,6 +12,7 @@ import (
 )
 
 type Worktree struct {
+	Root        string // primary checkout this worktree belongs to
 	Path        string
 	Branch      string // short name; empty when detached
 	Detached    bool
@@ -80,6 +81,9 @@ func List(root string) ([]Worktree, error) {
 	flush()
 	if len(wts) > 0 {
 		wts[0].IsPrimary = true
+	}
+	for i := range wts {
+		wts[i].Root = root
 	}
 
 	var wg sync.WaitGroup

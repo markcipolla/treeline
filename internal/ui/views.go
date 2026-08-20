@@ -49,6 +49,12 @@ func (m Model) View() string {
 		body = m.viewGitHub()
 	case scrSearch:
 		body = m.viewSearch()
+	case scrRepoPick:
+		body = m.viewRepoPick()
+	case scrSettings:
+		body = m.viewSettings()
+	case scrRepoEdit:
+		body = m.viewRepoEdit()
 	}
 	return m.zones.Scan(docStyle.Render(m.viewHeader() + "\n\n" + body))
 }
@@ -153,7 +159,7 @@ func (m Model) viewMain() string {
 		filterLine = m.filterInput.View() + "\n"
 	}
 
-	bindings := []key.Binding{keyOpen, keyJump, keyView, keyNew, keySearchL, keyDelete, keyRefresh, keyFilter}
+	bindings := []key.Binding{keyOpen, keyJump, keyView, keyNew, keySearchL, keyDelete, keyRefresh, keyFilter, keySettingsK}
 	if !m.authed {
 		bindings = append(bindings, keyAuth)
 	}
@@ -386,8 +392,9 @@ func (m Model) viewEditBranch() string {
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("Branch name") + "\n\n")
 	b.WriteString(m.branchInput.View() + "\n\n")
+	b.WriteString(labelStyle.Render("repo") + " " + m.pendRepo.name + "\n")
 	b.WriteString(labelStyle.Render("worktree") + " " + dir + "\n")
-	b.WriteString(labelStyle.Render("base") + " " + m.base + dimStyle.Render("  (existing branches are checked out as-is)") + "\n\n")
+	b.WriteString(labelStyle.Render("base") + " " + m.pendRepo.base + dimStyle.Render("  (existing branches are checked out as-is)") + "\n\n")
 	b.WriteString(m.buttonRow(
 		m.button("btn:create", "create", true),
 		m.button("btn:back", "back", false),
@@ -401,7 +408,11 @@ func (m Model) viewCreated() string {
 	if err != nil {
 		rel = m.createdPath
 	}
-	content := okStyle.Render("✓ Worktree created") + "\n\n" +
+	setupLine := ""
+	if m.setupBusy {
+		setupLine = m.spinner.View() + dimStyle.Render(" running setup script…") + "\n"
+	}
+	content := okStyle.Render("✓ Worktree created") + "\n" + setupLine + "\n" +
 		labelStyle.Render("branch") + " " + m.createdBranch + "\n" +
 		labelStyle.Render("path") + " " + rel + "\n\n" +
 		m.buttonRow(
