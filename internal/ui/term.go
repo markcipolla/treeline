@@ -194,6 +194,27 @@ func (s *claudeSession) scrollBy(delta int) int {
 	return s.scroll
 }
 
+// sendWheel hands a wheel event to the program running in the pane, encoded
+// the way the terminal would send it. A full-screen program repaints in place
+// rather than letting lines scroll off the top, so it builds no scrollback of
+// ours to move — the scrolling has to be its own. Reports whether the event
+// was the program's to handle; SendMouse is itself a no-op when the program
+// never asked for mouse events, and then the wheel simply does nothing, which
+// is all an empty scrollback could have offered anyway.
+func (s *claudeSession) sendWheel(up bool, x, y int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.em.IsAltScreen() {
+		return false
+	}
+	btn := vt.MouseWheelDown
+	if up {
+		btn = vt.MouseWheelUp
+	}
+	s.em.SendMouse(vt.MouseWheel{X: x, Y: y, Button: btn})
+	return true
+}
+
 func (s *claudeSession) scrollLive() {
 	s.mu.Lock()
 	s.scroll = 0
