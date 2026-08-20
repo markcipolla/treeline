@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same branch supersedes the one in flight, so a run of
+# commits doesn't tie up a self-hosted runner with work nobody will read.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: build · vet · test
+    # Self-hosted runners are scoped to a single repo, org or enterprise.
+    # treeline lives in the markcipolla org (free plan), so labflowai's
+    # runners — labflow-dev-aws, labflowai-test-arm64 — cannot be reached
+    # from here. Set the CI_RUNS_ON repository variable to a runner label
+    # once one is registered to this repo or org. Until then this falls back
+    # to a GitHub-hosted runner: a self-hosted label nothing answers would
+    # leave every run queued indefinitely rather than failing.
+    runs-on: ${{ vars.CI_RUNS_ON || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Several tests skip when a tool is missing rather than failing, which
+      # on a bare self-hosted runner would quietly shrink the suite. Say so.
+      - name: Check optional tools
+        run: |
+          for t in git tmux sh; do
+            if command -v "$t" >/dev/null 2>&1; then
+              echo "$t: $(command -v "$t")"
+            else
+              echo "::warning::$t is missing — the tests that need it will skip"
+            fi
+          done
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l main.go internal)
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt -w needed on:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go build
+        run: go build ./...
+
+      - name: go test
+        run: go test -count=1 ./...
+
+      # internal/ui is left out on purpose: closing a pane races inside
+      # charmbracelet/x/vt, where Emulator.closed is a plain bool that Close
+      # writes while Read and Write read it. Every session-closing test trips
+      # it, so racing that package would gate CI on an upstream fix. Put it
+      # back once x/vt synchronizes that flag.
+      - name: go test -race (all but internal/ui)
+        run: go test -race -count=1 $(go list ./... | grep -v '/internal/ui$')

@@ -116,19 +116,29 @@ func branchStatus(ctx context.Context, token, owner, repo, branch string) Status
 		return StatusNone // branch not pushed, no access, or no GitHub
 	}
 	var out struct {
-		CheckRuns []struct {
-			Status     string `json:"status"`
-			Conclusion string `json:"conclusion"`
-		} `json:"check_runs"`
+		CheckRuns []checkRun `json:"check_runs"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&out); err != nil {
 		return StatusNone
 	}
-	if len(out.CheckRuns) == 0 {
+	return statusFromRuns(out.CheckRuns)
+}
+
+// checkRun is one entry of a commit's check-runs listing.
+type checkRun struct {
+	Status     string `json:"status"`
+	Conclusion string `json:"conclusion"`
+}
+
+// statusFromRuns folds a commit's check runs into a single status: anything
+// still in flight makes the whole commit running, otherwise one bad
+// conclusion fails it. No runs at all means nothing to report.
+func statusFromRuns(runs []checkRun) Status {
+	if len(runs) == 0 {
 		return StatusNone
 	}
 	status := StatusOK
-	for _, cr := range out.CheckRuns {
+	for _, cr := range runs {
 		if cr.Status != "completed" {
 			return StatusRunning
 		}
