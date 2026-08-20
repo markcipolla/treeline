@@ -146,6 +146,7 @@ func (m *Model) applyRepoChanges() tea.Cmd {
 	m.repos = buildRepos(m.cfg, m.root)
 	m.base = m.repos[0].base
 	m.pendRepo = m.repos[0]
+	m.resize() // registering the second repo adds the REPO column
 	m.loadingWT = true
 	return m.loadWorktrees()
 }
