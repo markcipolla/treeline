@@ -239,6 +239,9 @@ func (m Model) viewPanels() string {
 		claudeBody = s.render(false) // frozen last frame
 	default:
 		claudeBody = s.render(m.pane == paneClaude)
+		if s.tmuxName != "" {
+			claudeTitle += dimStyle.Render(" · tmux") // survives quitting treeline
+		}
 		if n := s.scrolled(); n > 0 {
 			claudeTitle += fmt.Sprintf(" · ↑%d — wheel down for live", n)
 		}

@@ -16,6 +16,8 @@ import (
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/vt"
 	"github.com/creack/pty"
+
+	"github.com/markcipolla/treeline/internal/tmux"
 )
 
 // claudeTermMsg signals fresh output from an embedded terminal session.
@@ -24,16 +26,20 @@ type claudeTermMsg struct{ s *claudeSession }
 // claudeSession is an interactive `claude` running in a pty, mirrored into
 // the claude pane through a virtual terminal with scrollback.
 type claudeSession struct {
-	dir    string
-	cmd    *exec.Cmd
-	pty    *os.File
-	mu     sync.Mutex // guards em and scroll
-	em     *vt.Emulator
-	rows   int
-	cols   int
-	scroll int // lines scrolled up into history; 0 = live
-	notify chan struct{}
-	exited atomic.Bool
+	dir string
+	// tmuxName is the session on treeline's tmux server backing this pane,
+	// empty when the program runs in the pty directly. When set, closing the
+	// pane detaches instead of killing, so the work survives quitting.
+	tmuxName string
+	cmd      *exec.Cmd
+	pty      *os.File
+	mu       sync.Mutex // guards em and scroll
+	em       *vt.Emulator
+	rows     int
+	cols     int
+	scroll   int // lines scrolled up into history; 0 = live
+	notify   chan struct{}
+	exited   atomic.Bool
 
 	// mouse selection, in absolute coordinates: line < scrollback length is
 	// history, line >= is the live screen (index - sbLen)
@@ -48,43 +54,60 @@ type claudeSession struct {
 type selPoint struct{ line, col int }
 
 // startTerm and startShell are swappable so tests don't spawn processes.
+// persist asks for the program to run inside treeline's tmux server, so the
+// session outlives this treeline run.
 var (
-	startTerm = func(dir string, cols, rows int) (*claudeSession, error) {
-		return startProgramSession(dir, cols, rows, "claude")
+	startTerm = func(dir string, cols, rows int, persist bool) (*claudeSession, error) {
+		return startProgramSession(dir, cols, rows, persist, "claude", "claude")
 	}
-	startShell = func(dir string, cols, rows int) (*claudeSession, error) {
+	startShell = func(dir string, cols, rows int, persist bool) (*claudeSession, error) {
 		sh := os.Getenv("SHELL")
 		if sh == "" {
 			sh = "/bin/zsh"
 		}
-		return startProgramSession(dir, cols, rows, sh)
+		return startProgramSession(dir, cols, rows, persist, "shell", sh)
 	}
 )
 
-func startProgramSession(dir string, cols, rows int, name string, args ...string) (*claudeSession, error) {
+func startProgramSession(dir string, cols, rows int, persist bool, kind, name string, args ...string) (*claudeSession, error) {
 	if cols < 20 {
 		cols = 20
 	}
 	if rows < 5 {
 		rows = 5
 	}
-	cmd := exec.Command(name, args...)
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+	var (
+		cmd      *exec.Cmd
+		tmuxName string
+	)
+	if persist && tmux.Available() {
+		// Attach to (or create) a session on treeline's own tmux server: the
+		// process we spawn is only a client, so it can be dropped later
+		// without taking the program down with it.
+		tmuxName = tmux.Name(kind, dir)
+		cmd = tmux.Command(tmuxName, dir, name, args...)
+	} else {
+		cmd = exec.Command(name, args...)
+		cmd.Dir = dir
+	}
+	// TERM describes the pane's virtual terminal; TMUX is dropped so a
+	// treeline running inside tmux can still attach (see tmux.Env).
+	cmd.Env = tmux.Env(append(os.Environ(), "TERM=xterm-256color"))
 	p, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
 	if err != nil {
-		return nil, fmt.Errorf("starting claude: %w", err)
+		return nil, fmt.Errorf("starting %s: %w", name, err)
 	}
 	em := vt.NewEmulator(cols, rows)
 	em.SetScrollbackSize(5000)
 	s := &claudeSession{
-		dir:    dir,
-		cmd:    cmd,
-		pty:    p,
-		em:     em,
-		cols:   cols,
-		rows:   rows,
-		notify: make(chan struct{}, 1),
+		dir:      dir,
+		tmuxName: tmuxName,
+		cmd:      cmd,
+		pty:      p,
+		em:       em,
+		cols:     cols,
+		rows:     rows,
+		notify:   make(chan struct{}, 1),
 	}
 	// pty → emulator
 	go func() {
@@ -143,6 +166,11 @@ func (s *claudeSession) resize(cols, rows int) {
 	_ = pty.Setsize(s.pty, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
 }
 
+// close drops the pane. For a tmux-backed session the process being killed is
+// only this pane's tmux client, never the server: the claude or shell inside
+// keeps running, detached, and the next launch attaches straight back to it.
+// (Killing our own client rather than asking tmux to detach-client keeps a
+// second treeline attached to the same worktree undisturbed.)
 func (s *claudeSession) close() {
 	if s.cmd.Process != nil {
 		_ = s.cmd.Process.Kill()

@@ -92,6 +92,10 @@ an issue are grouped at the bottom.
 The mouse works too: click buttons and branch-type options; scroll the
 table and detail view with the wheel.
 
+`ctrl+q` cycles the panes: issues, claude, git, shell. The claude and shell
+panes run in the selected worktree and survive quitting — see
+[Background sessions](#background-sessions).
+
 ### Where worktrees live
 
 Inside the repo under `.worktrees/` (added to `.git/info/exclude`
@@ -108,6 +112,37 @@ myrepo/
 New branches start from `origin`'s default branch when it's known, otherwise
 `HEAD`. If the branch already exists it's checked out as-is.
 
+## Background sessions
+
+The claude and shell panes keep running after you quit. Where tmux is
+installed, treeline starts them on a tmux server of its own — a dedicated
+socket, its own config, no status bar and no prefix key — so quitting only
+detaches: the claude in a worktree keeps its context, a dev server in the
+shell pane keeps serving, and the next launch attaches straight back to
+them. Switching between worktrees inside treeline works the same way, one
+session per worktree per pane. Panes backed this way are marked `· tmux` in
+the pane title.
+
+Sessions outlive treeline, so there is a command to see and stop them:
+
+```sh
+treeline sessions                  # name, attached/detached, age, directory
+treeline sessions kill LMAP-142    # any unambiguous fragment of the name
+treeline sessions kill --all
+```
+
+To work in one full-screen instead of in the pane:
+
+```sh
+tmux -L treeline attach -t <name>          # detach again from another shell:
+tmux -L treeline detach-client -s <name>   # (treeline's server has no prefix key)
+```
+
+Removing a worktree stops its sessions — nothing is left running in a
+directory that no longer exists. Without tmux installed, panes behave as
+they always did: the programs are killed when treeline exits. Set
+`"persist_sessions": false` in the config to opt out.
+
 ## Config
 
 `~/.config/treeline/config.json`:
@@ -116,7 +151,8 @@ New branches start from `origin`'s default branch when it's known, otherwise
 {
   "linear": { "client_id": "…", "client_secret": "…", "access_token": "…" },
   "branch_types": ["feature", "bugfix", "hotfix", "chore"],
-  "slug_max_len": 48
+  "slug_max_len": 48,
+  "persist_sessions": true
 }
 ```
 
@@ -145,4 +181,6 @@ database); `cleanup` runs before one is removed (drop the database). The
 config lives at `~/.config/treeline/config.json`.
 
 `branch_types` controls the type-picker options; `slug_max_len` caps the
-slug generated from issue titles.
+slug generated from issue titles; `persist_sessions` (default on wherever
+tmux is installed) keeps the claude and shell panes alive between launches —
+see [Background sessions](#background-sessions).

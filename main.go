@@ -19,6 +19,7 @@ import (
 	"github.com/markcipolla/treeline/internal/github"
 	"github.com/markcipolla/treeline/internal/gitx"
 	"github.com/markcipolla/treeline/internal/linear"
+	"github.com/markcipolla/treeline/internal/tmux"
 	"github.com/markcipolla/treeline/internal/ui"
 )
 
@@ -36,6 +37,8 @@ usage:
   treeline rm <target>  remove a worktree by branch, issue key, or path
                         (--branch also deletes the branch, --force skips the
                         dirty-worktree confirmation)
+  treeline sessions     list the claude/shell sessions treeline keeps running
+                        in the background (kill <name> or kill --all to stop)
   treeline shell-init   print the "tl" shell function (add to your .zshrc)
   treeline version      print version
 
@@ -81,6 +84,8 @@ func main() {
 			}
 		case "rm", "remove", "delete":
 			runRemove(rest[1:])
+		case "sessions", "session", "ls-sessions":
+			runSessions(rest[1:])
 		case "shell-init":
 			fmt.Print(shellInit)
 		case "version", "--version", "-v":
@@ -118,7 +123,7 @@ func main() {
 	}
 
 	if m, ok := final.(ui.Model); ok {
-		m.Close() // stop any embedded claude sessions
+		m.Close() // detach persisted sessions, stop the rest
 		if path := m.JumpPath(); path != "" {
 			if cdFile != "" {
 				if err := os.WriteFile(cdFile, []byte(path), 0o600); err != nil {
@@ -267,6 +272,7 @@ func runRemove(args []string) {
 	if wt.IsPrimary {
 		fatal("refusing to remove the primary checkout at " + wt.Path)
 	}
+	tmux.KillDir(wt.Path) // don't leave a background claude in a deleted worktree
 
 	switch {
 	case wt.Prunable:
@@ -292,6 +298,97 @@ func runRemove(args []string) {
 			fatal(err.Error())
 		}
 		fmt.Println("✓ deleted branch " + wt.Branch)
+	}
+}
+
+// runSessions lists the sessions treeline keeps alive on its own tmux server
+// after it quits — a detached claude is otherwise invisible — and stops them
+// on request.
+func runSessions(args []string) {
+	if !tmux.Available() {
+		fatal("tmux is not installed, so sessions are not persisted — install tmux to keep claude running between launches")
+	}
+	if len(args) > 0 {
+		if args[0] != "kill" && args[0] != "rm" {
+			fatal("usage: treeline sessions [kill <name> | kill --all]")
+		}
+		killSession(args[1:])
+		return
+	}
+	sessions, err := tmux.List()
+	if err != nil {
+		fatal(err.Error())
+	}
+	if len(sessions) == 0 {
+		fmt.Println("no sessions running — treeline starts them when you open the claude or shell pane")
+		return
+	}
+
+	sort.Slice(sessions, func(i, j int) bool { return sessions[i].Name < sessions[j].Name })
+	for _, s := range sessions {
+		state := "detached"
+		if s.Attached {
+			state = "attached"
+		}
+		fmt.Printf("  %-34s  %-8s  %6s  %s\n", s.Name, state, age(s.Created), s.Dir)
+	}
+	fmt.Println()
+	fmt.Println("attach outside treeline:  tmux -L " + tmux.Socket + " attach -t <name>")
+	fmt.Println("stop one:                 treeline sessions kill <name>")
+}
+
+// killSession ends one session by name (any unambiguous fragment will do) or
+// every one of them.
+func killSession(args []string) {
+	if len(args) != 1 {
+		fatal("usage: treeline sessions kill <name> | treeline sessions kill --all")
+	}
+	if args[0] == "--all" || args[0] == "-a" {
+		if err := tmux.KillAll(); err != nil {
+			fatal(err.Error())
+		}
+		fmt.Println("✓ stopped every session")
+		return
+	}
+	sessions, err := tmux.List()
+	if err != nil {
+		fatal(err.Error())
+	}
+	var matches []string
+	for _, s := range sessions {
+		if s.Name == args[0] {
+			matches = []string{s.Name}
+			break
+		}
+		if strings.Contains(s.Name, args[0]) {
+			matches = append(matches, s.Name)
+		}
+	}
+	switch len(matches) {
+	case 0:
+		fatal("no session matches " + args[0] + " — see them with `treeline sessions`")
+	case 1:
+	default:
+		fatal("several sessions match " + args[0] + ": " + strings.Join(matches, ", "))
+	}
+	if err := tmux.Kill(matches[0]); err != nil {
+		fatal(err.Error())
+	}
+	fmt.Println("✓ stopped " + matches[0])
+}
+
+// age renders how long a session has been up, at one unit of precision.
+func age(t time.Time) string {
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours())/24)
 	}
 }
 

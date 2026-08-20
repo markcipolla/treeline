@@ -18,10 +18,20 @@ type Config struct {
 	GitHub      GitHubConfig `json:"github"`
 	BranchTypes []string     `json:"branch_types"`
 	SlugMaxLen  int          `json:"slug_max_len"`
+	// PersistSessions keeps the claude and shell panes running on treeline's
+	// own tmux server, so quitting treeline detaches from them instead of
+	// killing them and the next launch picks them back up. Unset means on
+	// wherever tmux is installed; set it to false to opt out.
+	PersistSessions *bool `json:"persist_sessions,omitempty"`
 	// Repos remembers primary checkouts by name (e.g. "labmaster"), so
 	// treeline can be launched anywhere, list every repo's worktrees, and
 	// offer a repo picker when creating one.
 	Repos map[string]RepoConfig `json:"repos,omitempty"`
+}
+
+// Persist reports whether embedded sessions should be tmux-backed.
+func (c *Config) Persist() bool {
+	return c.PersistSessions == nil || *c.PersistSessions
 }
 
 // RepoConfig is a registered repository: its primary checkout plus optional
