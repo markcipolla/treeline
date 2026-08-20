@@ -317,6 +317,11 @@ func buildRepos(cfg *config.Config, root string) []repoEntry {
 	return repos
 }
 
+// multiRepo reports whether treeline is operating on more than one repo. The
+// table carries a REPO column only then — with a single repo every row would
+// say the same thing.
+func (m Model) multiRepo() bool { return len(m.repos) > 1 }
+
 // repoFor finds the entry owning a primary checkout path.
 func (m Model) repoFor(root string) repoEntry {
 	for _, r := range m.repos {
@@ -810,27 +815,62 @@ func (m *Model) resize() {
 }
 
 // setTableLayout sizes the issue table's columns for the given width.
-// ASSIGNEE is the first column to go when the terminal is narrow: a zero
-// width hides a column outright, which the table widget and the frame
-// drawing in renderTable both honour.
+// ASSIGNEE is the first column to go when the terminal is narrow, then REPO
+// (whose cell only appears with several repos registered, and whose repo the
+// worktree path names anyway): a zero width hides a column outright, which
+// the table widget and the frame drawing in renderTable both honour.
 func (m *Model) setTableLayout(w, h int) {
 	pad := 3 // each cell: 1-char divider + 1 padding on both sides
 	w--      // renderTable appends a right edge to every row
 	keyW, priW, gitW, ciW := 10, 8, 10, 3
-	const titleMin, wtMin, asgFull = 12, 8, 14
+	const titleMin, wtMin, asgFull, repoMax = 12, 8, 14, 14
 
-	// ASSIGNEE only earns a column once TITLE and WORKTREE can still hold
-	// their floors alongside it
-	asgW, cols := asgFull, 7
-	if w < keyW+priW+gitW+ciW+asgFull+titleMin+wtMin+7*pad {
-		asgW, cols = 0, 6
+	// the columns that are always there, TITLE and WORKTREE at their floors
+	fixed := keyW + priW + gitW + ciW + titleMin + wtMin
+	// each optional column costs its width plus a divider and padding
+	fits := func(widths ...int) bool {
+		total := fixed + 6*pad
+		for _, x := range widths {
+			if x > 0 {
+				total += x + pad
+			}
+		}
+		return total <= w
+	}
+
+	// REPO is only as wide as the names it holds — repo names are short, and
+	// the space is better spent on TITLE
+	repoW := 0
+	if m.multiRepo() {
+		repoW = lipgloss.Width("REPO")
+		for _, r := range m.repos {
+			if n := lipgloss.Width(r.name); n > repoW {
+				repoW = n
+			}
+		}
+		if repoW > repoMax {
+			repoW = repoMax
+		}
+	}
+	asgW := asgFull
+	if !fits(asgW, repoW) {
+		asgW = 0
+	}
+	if !fits(asgW, repoW) {
+		repoW = 0
+	}
+	cols := 6
+	for _, x := range []int{asgW, repoW} {
+		if x > 0 {
+			cols++
+		}
 	}
 
 	wtW := w * 22 / 100
 	if wtW < 14 {
 		wtW = 14
 	}
-	titleW := w - keyW - priW - asgW - gitW - ciW - wtW - cols*pad
+	titleW := w - keyW - priW - asgW - repoW - gitW - ciW - wtW - cols*pad
 	if titleW < titleMin {
 		// give TITLE its floor back out of WORKTREE so the frame still fits
 		wtW -= titleMin - titleW
@@ -839,15 +879,28 @@ func (m *Model) setTableLayout(w, h int) {
 			wtW = wtMin
 		}
 	}
-	m.table.SetColumns([]table.Column{
+	// hiding REPO hands the repo name back to the worktree cell, so rows built
+	// under the old column set have to be rebuilt
+	hadRepo := m.repoColumnVisible()
+
+	columns := []table.Column{
 		{Title: "KEY", Width: keyW},
 		{Title: "TITLE", Width: titleW},
 		{Title: "PRIORITY", Width: priW},
 		{Title: "ASSIGNEE", Width: asgW},
-		{Title: "WORKTREE", Width: wtW},
-		{Title: "GIT", Width: gitW},
-		{Title: "CI", Width: ciW},
-	})
+	}
+	if m.multiRepo() {
+		columns = append(columns, table.Column{Title: "REPO", Width: repoW})
+	}
+	columns = append(columns,
+		table.Column{Title: "WORKTREE", Width: wtW},
+		table.Column{Title: "GIT", Width: gitW},
+		table.Column{Title: "CI", Width: ciW},
+	)
+	m.table.SetColumns(columns)
+	if m.repoColumnVisible() != hadRepo && len(m.refs) > 0 {
+		m.refreshRows()
+	}
 	m.table.SetWidth(w)
 	// renderTable adds a top and bottom frame line around the widget
 	m.table.SetHeight(h - 2)
@@ -925,9 +978,18 @@ func (m *Model) refreshRows() {
 
 	var rows []table.Row
 	var refs []rowRef
+	// row assembles cells in column order, dropping REPO when the column is
+	// not in the set — renderRow indexes the columns per cell
+	row := func(key, title, pri, asg, repo, wt, git, ci string) table.Row {
+		r := table.Row{key, title, pri, asg}
+		if m.multiRepo() {
+			r = append(r, repo)
+		}
+		return append(r, wt, git, ci)
+	}
 	header := func(title string) {
 		// plain text: styled cells break the table's width-based truncation
-		rows = append(rows, table.Row{"", "▸ " + title, "", "", "", "", ""})
+		rows = append(rows, row("", "▸ "+title, "", "", "", "", "", ""))
 		refs = append(refs, rowRef{kind: rowHeader})
 	}
 
@@ -941,7 +1003,7 @@ func (m *Model) refreshRows() {
 				gitCell = wtStatus(*wt)
 				ciCell = ciSymbol(m.ci[wt.Branch])
 			}
-			rows = append(rows, table.Row{is.Identifier, is.Title, linear.PriorityName(is.Priority), is.Assignee, wtCell, gitCell, ciCell})
+			rows = append(rows, row(is.Identifier, is.Title, linear.PriorityName(is.Priority), is.Assignee, m.wtRepoName(wt), wtCell, gitCell, ciCell))
 			refs = append(refs, rowRef{kind: rowIssue, issue: is, wt: wt})
 		}
 	}
@@ -959,7 +1021,7 @@ func (m *Model) refreshRows() {
 		if wt.IsPrimary {
 			name += " ●"
 		}
-		wtRows = append(wtRows, table.Row{"", name, "", "", m.wtLabel(wt), wtStatus(*wt), ciSymbol(m.ci[wt.Branch])})
+		wtRows = append(wtRows, row("", name, "", "", m.wtRepoName(wt), m.wtLabel(wt), wtStatus(*wt), ciSymbol(m.ci[wt.Branch])))
 		wtRefs = append(wtRefs, rowRef{kind: rowWorktree, wt: wt})
 	}
 	if len(wtRows) > 0 {
@@ -1423,10 +1485,6 @@ func (m Model) guessTypeIdx(labels []string) int {
 		}
 	}
 	return featureIdx
-}
-
-func (m Model) repoName() string {
-	return filepath.Base(m.root)
 }
 
 // ---- keyboard ----

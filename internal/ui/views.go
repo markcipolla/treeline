@@ -79,10 +79,9 @@ func (m Model) viewGitHub() string {
 }
 
 func (m Model) viewHeader() string {
+	// no repo name here: which repo a branch lives in is per-worktree, and
+	// the table's REPO column says it per row
 	left := titleStyle.Render("🌲 treeline")
-	if name := m.repoName(); name != "treeline" {
-		left += metaStyle.Render("  " + name)
-	}
 	right := ""
 	if who := m.viewer.Email; m.authed || who != "" || m.viewer.Name != "" {
 		if who == "" {

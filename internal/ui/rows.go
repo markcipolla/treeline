@@ -111,13 +111,44 @@ func (m Model) branchForKey(key string) (root, local, remote string) {
 	return "", "", ""
 }
 
-// wtLabel names a worktree's location: repo-relative for the primary repo,
-// repo-prefixed for the others.
+// wtLabel names a worktree's location, relative to the repo it belongs to.
+// Foreign worktrees carry their repo name here when the REPO column is not
+// showing it — with one repo registered, or on a terminal too narrow for it.
 func (m Model) wtLabel(wt *gitx.Worktree) string {
-	if wt.Root == m.root || wt.Root == "" {
-		return relPath(m.root, wt.Path)
+	if wt.Root == m.root || wt.Root == "" || m.repoColumnVisible() {
+		return relPath(m.repoRoot(wt), wt.Path)
 	}
 	return m.repoFor(wt.Root).name + ":" + relPath(wt.Root, wt.Path)
+}
+
+// repoColumnVisible reports whether the table is currently showing the REPO
+// column: it is out of the set with a single repo, and squeezed to zero width
+// on a narrow terminal.
+func (m Model) repoColumnVisible() bool {
+	for _, c := range m.table.Columns() {
+		if c.Title == "REPO" {
+			return c.Width > 0
+		}
+	}
+	return false
+}
+
+// repoRoot is the primary checkout a worktree hangs off, defaulting to the
+// repo treeline was launched in.
+func (m Model) repoRoot(wt *gitx.Worktree) string {
+	if wt == nil || wt.Root == "" {
+		return m.root
+	}
+	return wt.Root
+}
+
+// wtRepoName names the repo a worktree belongs to, for the REPO column. Cards
+// with no worktree leave the cell blank: nothing ties them to a repo yet.
+func (m Model) wtRepoName(wt *gitx.Worktree) string {
+	if wt == nil {
+		return ""
+	}
+	return m.repoFor(m.repoRoot(wt)).name
 }
 
 // paneLabel names a working directory for pane titles: the linked Linear
