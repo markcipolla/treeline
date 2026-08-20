@@ -18,14 +18,13 @@ permissions:
 jobs:
   check:
     name: build · vet · test
-    # Self-hosted runners are scoped to a single repo, org or enterprise.
-    # treeline lives in the markcipolla org (free plan), so labflowai's
-    # runners — labflow-dev-aws, labflowai-test-arm64 — cannot be reached
-    # from here. Set the CI_RUNS_ON repository variable to a runner label
-    # once one is registered to this repo or org. Until then this falls back
-    # to a GitHub-hosted runner: a self-hosted label nothing answers would
-    # leave every run queued indefinitely rather than failing.
-    runs-on: ${{ vars.CI_RUNS_ON || 'ubuntu-latest' }}
+    # Pushes run on our own runner (see ci/runner), pull requests never do:
+    # treeline is public, so a fork PR is untrusted code and must not execute
+    # on hardware we own. CI_RUNS_ON names the runner's label — while it is
+    # unset everything falls back to a GitHub-hosted runner, because a
+    # self-hosted label nothing answers leaves runs queued indefinitely
+    # rather than failing.
+    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || (vars.CI_RUNS_ON || 'ubuntu-latest') }}
     steps:
       - uses: actions/checkout@v7
 
