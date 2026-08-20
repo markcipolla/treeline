@@ -27,6 +27,33 @@ type rowRef struct {
 	wt    *gitx.Worktree // for rowIssue: the linked worktree, if any
 }
 
+// keys identifies what a row points at — a card, a worktree, or both when the
+// card has one checked out — so the cursor can follow the same thing when the
+// table is rebuilt underneath it. Cards arriving from Linear shift every row
+// index, and a worktree listed on its own merges into its card's row.
+func (r rowRef) keys() []string {
+	var ks []string
+	if r.issue != nil {
+		ks = append(ks, "issue:"+r.issue.Identifier)
+	}
+	if r.wt != nil {
+		ks = append(ks, "wt:"+r.wt.Path)
+	}
+	return ks
+}
+
+// sameRow reports whether two rows stand for the same card or worktree.
+func sameRow(a, b []string) bool {
+	for _, x := range a {
+		for _, y := range b {
+			if x == y {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // stateRank orders status groups: active work first, then queued, then the
 // noise. Unknown types sort last.
 func stateRank(stateType string) int {

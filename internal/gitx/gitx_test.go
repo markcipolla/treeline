@@ -126,3 +126,35 @@ func TestDefaultBaseWithoutRemote(t *testing.T) {
 		t.Errorf("DefaultBase = %q, want the local %q branch", base, current)
 	}
 }
+
+// DiffFile on an untracked file runs `diff --no-index`, which exits 1 simply
+// because the files differ. The diff must still come back — otherwise the git
+// pane shows "✗ git diff: exit status 1" for every new file.
+func TestDiffFileUntracked(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	root := tempRepo(t)
+	if err := os.WriteFile(filepath.Join(root, "new.txt"), []byte("fresh\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	diff, err := DiffFile(root, "new.txt", false, true)
+	if err != nil {
+		t.Fatalf("DiffFile: %v", err)
+	}
+	if !strings.Contains(diff, "fresh") {
+		t.Errorf("diff should show the new content, got:\n%s", diff)
+	}
+}
+
+// A tracked file's diff still fails loudly when git really fails.
+func TestDiffFileMissingPathErrors(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	root := tempRepo(t)
+	if _, err := DiffFile(root, "../outside-the-repo", false, false); err == nil {
+		t.Error("expected an error for a path outside the repository")
+	}
+}

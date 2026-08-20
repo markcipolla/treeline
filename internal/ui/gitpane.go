@@ -201,6 +201,69 @@ func splitStatus(files []gitx.FileStatus) (unstaged, staged []gitx.FileStatus) {
 	return unstaged, staged
 }
 
+// gitFilesLayout is the files-mode geometry: the height of the file picker
+// (its first line is the column header) and the width of the left column.
+// The renderer and the mouse handler both need these numbers, so that a
+// wheel event can tell which of the three regions it lands in.
+func (m Model) gitFilesLayout(w, h int) (listH, lw int) {
+	listH = h / 2
+	if listH < 4 {
+		listH = 4
+	}
+	maxRows := len(m.gitUnstaged)
+	if len(m.gitStaged) > maxRows {
+		maxRows = len(m.gitStaged)
+	}
+	if listH > maxRows+1 {
+		listH = maxRows + 1
+	}
+	return listH, (w - 3) / 2
+}
+
+// clampScroll keeps an offset inside a scrollable range.
+func clampScroll(off, n, rows int) int {
+	if max := n - rows; off > max {
+		off = max
+	}
+	if off < 0 {
+		off = 0
+	}
+	return off
+}
+
+// scrollGitDiff moves the files-mode preview under the picker, leaving the
+// selected file where it is.
+func (m *Model) scrollGitDiff(delta int) {
+	w, h := m.gitPaneSize()
+	listH, _ := m.gitFilesLayout(w, h)
+	m.gitDiffScroll = clampScroll(m.gitDiffScroll+delta,
+		len(strings.Split(m.gitDiff, "\n")), h-listH-1)
+}
+
+// revealGitSel scrolls the active column just far enough to show the selected
+// row: moving the cursor with the keyboard pulls the view along, while the
+// wheel is free to scroll away from it.
+func (m *Model) revealGitSel() {
+	w, h := m.gitPaneSize()
+	listH, _ := m.gitFilesLayout(w, h)
+	rows := listH - 1
+	if rows < 1 {
+		return
+	}
+	sel := m.gitSelU
+	if m.gitCol == 1 {
+		sel = m.gitSelS
+	}
+	off := &m.gitScroll[m.gitCol]
+	if sel < *off {
+		*off = sel
+	}
+	if sel >= *off+rows {
+		*off = sel - rows + 1
+	}
+	*off = clampScroll(*off, len(m.gitList(m.gitCol)), rows)
+}
+
 // gitList returns the column's entries: 0 unstaged, 1 staged.
 func (m Model) gitList(col int) []gitx.FileStatus {
 	if col == 1 {
@@ -221,6 +284,8 @@ func (m *Model) clampGitSel() {
 	}
 	m.gitSelU = clamp(m.gitSelU, len(m.gitUnstaged))
 	m.gitSelS = clamp(m.gitSelS, len(m.gitStaged))
+	m.gitScroll[0] = clampScroll(m.gitScroll[0], len(m.gitUnstaged), 1)
+	m.gitScroll[1] = clampScroll(m.gitScroll[1], len(m.gitStaged), 1)
 	// don't rest on an empty column when the other has entries
 	if len(m.gitList(m.gitCol)) == 0 && len(m.gitList(1-m.gitCol)) > 0 {
 		m.gitCol = 1 - m.gitCol
@@ -261,6 +326,8 @@ func (m *Model) moveGitSel(delta int) tea.Cmd {
 		return nil
 	}
 	*sel = i
+	m.gitDiffScroll = 0
+	m.revealGitSel()
 	return m.loadSelectedFileDiff()
 }
 
@@ -269,6 +336,8 @@ func (m *Model) switchGitCol() tea.Cmd {
 		return nil
 	}
 	m.gitCol = 1 - m.gitCol
+	m.gitDiffScroll = 0
+	m.revealGitSel()
 	return m.loadSelectedFileDiff()
 }
 
@@ -280,6 +349,8 @@ func (m Model) clickGitFile(staged bool, i int) (tea.Model, tea.Cmd) {
 	} else {
 		m.gitCol, m.gitSelU = 0, i
 	}
+	m.gitDiffScroll = 0
+	m.revealGitSel()
 	mm, cmd := m.focusPane(paneDiff)
 	model := mm.(Model)
 	return model, tea.Batch(cmd, model.loadSelectedFileDiff())
@@ -360,6 +431,7 @@ func (m *Model) toggleStageFile() tea.Cmd {
 }
 
 func (m Model) keyGit(k tea.KeyMsg) (tea.Model, tea.Cmd) {
+	m.gitSel.clear() // typing moves the text the highlight was drawn over
 	switch m.gitMode {
 	case gitModeHunks:
 		switch k.String() {
@@ -453,6 +525,12 @@ func (m Model) keyGit(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.moveGitSel(-1)
 	case "down", "j":
 		return m, m.moveGitSel(1)
+	case "pgup", "shift+up", "K":
+		m.scrollGitDiff(-5) // the preview scrolls without moving the cursor
+		return m, nil
+	case "pgdown", "shift+down", "J":
+		m.scrollGitDiff(5)
+		return m, nil
 	case "left", "right", "h", "tab":
 		return m, m.switchGitCol()
 	case " ", "space":
@@ -523,11 +601,9 @@ func (m Model) fileColumn(col, w, h int) []string {
 	if len(list) == 0 {
 		lines = append(lines, dimStyle.Render("  (none)"))
 	}
-	start := 0
-	if sel >= h-1 {
-		start = sel - (h - 1) + 1
-	}
-	for i := start; i < len(list) && i < start+h-1; i++ {
+	rows := h - 1 // the header takes the first line
+	start := clampScroll(m.gitScroll[col], len(list), rows)
+	for i := start; i < len(list) && i < start+rows; i++ {
 		fs := list[i]
 		line := statusLetter(fs, col == 1) + " " + fs.Path
 		if fs.Orig != "" {
@@ -660,7 +736,13 @@ func (m Model) gitPaneContent(w, h int) (string, string) {
 	if m.gitDiff == "" {
 		b.WriteString(dimStyle.Render("(no diff)"))
 	} else {
-		b.WriteString(m.gitDiff)
+		lines := strings.Split(m.gitDiff, "\n")
+		rows := h - listH - 1 // what is left under the picker and its rule
+		off := clampScroll(m.gitDiffScroll, len(lines), rows)
+		b.WriteString(strings.Join(lines[off:], "\n"))
+		if off > 0 {
+			title += fmt.Sprintf(" · ↓%d", off)
+		}
 	}
 	return title, clipLines(b.String(), w, h)
 }
