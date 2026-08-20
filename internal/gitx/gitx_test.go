@@ -1,6 +1,7 @@
 package gitx
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -77,7 +78,7 @@ func TestAddListRemove(t *testing.T) {
 		t.Error("worktree should be dirty")
 	}
 
-	if err := Remove(root, wts[1].Path, true); err != nil {
+	if err := Remove(root, wts[1].Path, true, false); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
 	if err := DeleteBranch(root, "feature/LMAP-1/test-thing"); err != nil {
@@ -156,5 +157,59 @@ func TestDiffFileMissingPathErrors(t *testing.T) {
 	root := tempRepo(t)
 	if _, err := DiffFile(root, "../outside-the-repo", false, false); err == nil {
 		t.Error("expected an error for a path outside the repository")
+	}
+}
+
+// A locked worktree — claude locks the one it is working in — can only be
+// removed with a second --force. Remove reports the refusal as ErrLocked,
+// carrying the reason so the caller can say what holds it.
+func TestRemoveLockedWorktree(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	root := tempRepo(t)
+	dir := filepath.Join(".worktrees", "LMAP-9-locked")
+	if err := Add(root, dir, "feature/LMAP-9/locked", "HEAD", true); err != nil {
+		t.Fatal(err)
+	}
+	const reason = "claude session encapsulated-shimmying-sparrow (pid 65825)"
+	mustGit(t, root, "worktree", "lock", "--reason", reason, dir)
+
+	wts, err := List(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wt *Worktree
+	for i := range wts {
+		if strings.HasSuffix(wts[i].Path, "LMAP-9-locked") {
+			wt = &wts[i]
+		}
+	}
+	if wt == nil {
+		t.Fatal("worktree not listed")
+	}
+	if !wt.Locked || wt.LockReason != reason {
+		t.Errorf("Locked=%v LockReason=%q, want true and %q", wt.Locked, wt.LockReason, reason)
+	}
+
+	err = Remove(root, wt.Path, true, false) // --force alone is not enough
+	if !errors.Is(err, ErrLocked) {
+		t.Fatalf("Remove without unlock: %v, want ErrLocked", err)
+	}
+	if !strings.Contains(err.Error(), reason) {
+		t.Errorf("error should name what holds the lock, got %v", err)
+	}
+
+	if err := Remove(root, wt.Path, true, true); err != nil {
+		t.Fatalf("Remove with unlock: %v", err)
+	}
+	after, err := List(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range after {
+		if strings.HasSuffix(w.Path, "LMAP-9-locked") {
+			t.Error("worktree survived a forced removal")
+		}
 	}
 }

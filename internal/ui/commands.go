@@ -280,7 +280,7 @@ func (e pathExistsError) Error() string { return string(e) + " already exists" }
 
 func errPathExists(dir string) error { return pathExistsError(dir) }
 
-func removeWorktreeCmd(wt gitx.Worktree, deleteBranch bool, cleanup, repoName string) tea.Cmd {
+func removeWorktreeCmd(wt gitx.Worktree, deleteBranch, unlock bool, cleanup, repoName string) tea.Cmd {
 	root := wt.Root
 	return func() tea.Msg {
 		var warn string
@@ -298,7 +298,7 @@ func removeWorktreeCmd(wt gitx.Worktree, deleteBranch bool, cleanup, repoName st
 			if err := gitx.Prune(root); err != nil {
 				return removedMsg{err: err}
 			}
-		} else if err := gitx.Remove(root, wt.Path, wt.Dirty); err != nil {
+		} else if err := gitx.Remove(root, wt.Path, wt.Dirty, unlock); err != nil {
 			return removedMsg{err: err}
 		}
 		if deleteBranch && wt.Branch != "" {

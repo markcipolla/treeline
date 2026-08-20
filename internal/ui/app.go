@@ -174,7 +174,11 @@ type Model struct {
 	// delete confirm
 	delTarget *gitx.Worktree
 	delFocus  int // focused button: 0 remove, 1 remove+branch, 2 cancel
-	removing  bool
+	// delForce is set once git has refused because the worktree is locked:
+	// the same modal then asks again, and the buttons break the lock.
+	delForce bool
+	delErr   error // why the last attempt failed, shown in the modal
+	removing bool
 
 	// linear auth
 	authInputs [2]textinput.Model
@@ -647,13 +651,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case removedMsg:
 		m.removing = false
 		if msg.err != nil {
+			// A lock is worth a second ask rather than a dead end: keep the
+			// modal up, explain what holds the worktree, and offer to break it.
+			if errors.Is(msg.err, gitx.ErrLocked) && !m.delForce && m.delTarget != nil {
+				m.delForce, m.delErr, m.delFocus = true, msg.err, 2 // default to cancel
+				m.screen = scrDeleteConfirm
+				return m, nil
+			}
 			m.err = msg.err
+			m.delErr = msg.err
 			return m, nil
 		}
 		if msg.warn != "" {
 			m.err = errors.New(msg.warn)
 		}
-		m.delTarget = nil
+		m.delTarget, m.delForce, m.delErr = nil, false, nil
 		m.screen = scrMain
 		m.loadingWT = true
 		return m, m.loadWorktrees()
@@ -1374,7 +1386,7 @@ func (m Model) doRemove(deleteBranch bool) (tea.Model, tea.Cmd) {
 	m.removing = true
 	m.dropSessions(m.delTarget.Path) // nothing should be left running in a dir about to go
 	repo := m.repoFor(m.delTarget.Root)
-	return m, removeWorktreeCmd(*m.delTarget, deleteBranch, repo.cleanup, repo.name)
+	return m, removeWorktreeCmd(*m.delTarget, deleteBranch, m.delForce, repo.cleanup, repo.name)
 }
 
 // dropSessions ends the claude and shell panes for a directory. Persisted
@@ -1456,6 +1468,7 @@ func (m Model) startDelete() (tea.Model, tea.Cmd) {
 	if ref := m.selectedRef(); ref.wt != nil && !ref.wt.IsPrimary {
 		m.delTarget = ref.wt
 		m.delFocus = 0
+		m.delForce, m.delErr = false, nil
 		m.screen = scrDeleteConfirm
 	}
 	return m, nil
@@ -2041,8 +2054,7 @@ func (m Model) keyDeleteConfirm(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	switch k.String() {
 	case "esc", "n":
-		m.delTarget = nil
-		m.screen = scrMain
+		m.cancelDelete()
 		return m, nil
 	case "y":
 		return m.doRemove(false)
@@ -2061,11 +2073,16 @@ func (m Model) keyDeleteConfirm(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case 1:
 			return m.doRemove(true)
 		}
-		m.delTarget = nil
-		m.screen = scrMain
+		m.cancelDelete()
 		return m, nil
 	}
 	return m, nil
+}
+
+// cancelDelete closes the remove modal, forgetting any force escalation.
+func (m *Model) cancelDelete() {
+	m.delTarget, m.delForce, m.delErr = nil, false, nil
+	m.screen = scrMain
 }
 
 func (m Model) keyAuth(k tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -2464,8 +2481,7 @@ func (m Model) handleClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			return m.doRemove(true)
 		case m.clicked(msg, "btn:cancel"):
 			if !m.removing {
-				m.delTarget = nil
-				m.screen = scrMain
+				m.cancelDelete()
 			}
 		}
 		return m, nil

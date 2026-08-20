@@ -26,6 +26,8 @@ var (
 	keyConfirm2  = key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "confirm"))
 	keyRemove    = key.NewBinding(key.WithKeys("y"), key.WithHelp("y", "remove"))
 	keyRemoveB   = key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "remove + delete branch"))
+	keyForce     = key.NewBinding(key.WithKeys("y"), key.WithHelp("y", "force remove"))
+	keyForceB    = key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "force remove + delete branch"))
 	keyField     = key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "switch field"))
 	keyApply     = key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "apply"))
 	keyClear     = key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "clear filter"))
