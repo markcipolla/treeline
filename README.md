@@ -111,6 +111,29 @@ table and detail view with the wheel.
 panes run in the selected worktree and survive quitting — see
 [Background sessions](#background-sessions).
 
+### Layouts
+
+How the panes are arranged follows the width of the terminal:
+
+| Width   | Layout                                                            |
+| ------- | ----------------------------------------------------------------- |
+| < 110   | the issues table on its own                                       |
+| 110–179 | issues as a strip on top, claude beside the git pane over a shell |
+| 180–239 | three columns: issues, claude, git over the shell                 |
+| ≥ 240   | four columns: the shell gets one of its own                       |
+
+In the stacked layout the issues strip collapses to a single line when
+another pane has focus and grows back to half the screen when you `ctrl+q`
+into it. As a column it stays full height, so the cards are always in view,
+and it widens when you focus it — far enough to show every column of the
+grid, never so far that the work panes stop being usable. A narrow issues
+column drops the cells it can do without — ASSIGNEE, then REPO, then
+WORKTREE and PRIORITY — to keep titles readable.
+
+Panes that meet share the line between them, and each junction is drawn with
+the glyph for the lines that actually meet there, so the panels read as one
+grid rather than as boxes pushed together.
+
 ### The git pane
 
 Files mode puts the unstaged and staged lists side by side with the selected

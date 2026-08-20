@@ -64,9 +64,9 @@ func TestIssuesPaneFillsItsHeight(t *testing.T) {
 	m.resize()
 	m.refreshRows()
 
-	topH, _ := m.panelHeights()
-	got := len(strings.Split(m.issuesPane("issues & worktrees"), "\n"))
-	if got != topH {
-		t.Errorf("issues pane is %d lines, want %d", got, topH)
+	want := m.layout().issues.h
+	framed := frame(band{{m.issuesPart("issues & worktrees", true)}})
+	if got := len(strings.Split(framed, "\n")); got != want {
+		t.Errorf("issues pane is %d lines, want %d", got, want)
 	}
 }

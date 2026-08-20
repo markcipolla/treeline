@@ -203,43 +203,25 @@ func (m Model) viewMain() string {
 	return summary + "\n\n" + filterLine + content + "\n" + m.statusOrHelp(bindings)
 }
 
-// viewPanels lays out the wide-terminal main screen: a full-width issues
-// strip on top (one line when unfocused, half the screen when focused), with
-// the claude chat and the selected worktree's diff side by side below.
+// viewPanels lays out the wide-terminal main screen. The arrangement follows
+// the width: the issues list is a strip above the work panes on a merely wide
+// terminal, a column beside them on a wider one, and on a very wide terminal
+// the shell steps out from under the git pane into a column of its own. The
+// panes are drawn as one border grid, sharing the lines between them.
 func (m Model) viewPanels() string {
-	w := m.width - docStyle.GetHorizontalFrameSize()
-	topH, bottomH := m.panelHeights()
+	l := m.layout()
 
-	pane := func(w, h int, focused bool, title, body string) string {
-		st, ts, rs := paneStyle, paneTitleStyle, metaStyle
-		if focused {
-			st, ts, rs = paneFocusStyle, paneTitleFocus, okStyle
-		}
-		rule := rs.Render(strings.Repeat("═", w-2))
-		out := st.Width(w - 2).Height(h - 2).Render(
-			ts.Render(truncate(title, w-4)) + "\n" + rule + "\n" + body)
-		// join the title rule into the side borders: │═══│ → ╞═══╡
-		lines := strings.Split(out, "\n")
-		if len(lines) > 2 {
-			l := strings.Replace(lines[2], "│", "╞", 1)
-			if i := strings.LastIndex(l, "│"); i >= 0 {
-				l = l[:i] + "╡" + l[i+len("│"):]
-			}
-			lines[2] = l
-		}
-		return strings.Join(lines, "\n")
+	// the issues list: full height in the column layouts, and in the stacked
+	// one a strip that collapses to a single line when another pane has focus
+	var issues panePart
+	switch w, h := l.issues.w-2, l.issues.h-2; {
+	case m.columnLayout() || m.pane == paneIssues:
+		issues = m.issuesPart(m.issuesTitle(l.issues.w), m.pane == paneIssues)
+	default:
+		issues = panePart{w: w, rows: fitRows(m.collapsedIssueLine(w), w, h),
+			edges: make([]edgeKind, h)}
 	}
-
-	var top string
-	if m.pane == paneIssues {
-		top = m.issuesPane("issues & worktrees")
-	} else {
-		top = paneStyle.Width(w - 2).Height(topH - 2).Render(m.collapsedIssueLine(w - 4))
-	}
-	top = m.zones.Mark("pane:issues", top)
-
-	lw := w / 2
-	rw := w - lw
+	issues = m.mark("pane:issues", issues)
 
 	dir := m.claudeDir()
 	noWT := dir == "" // nothing checked out: the work panes stay empty
@@ -275,11 +257,10 @@ func (m Model) viewPanels() string {
 	if time.Now().Before(m.copiedUntil) {
 		claudeTitle += okStyle.Render(" · copied ✓")
 	}
-	center := m.zones.Mark("pane:claude",
-		pane(lw, bottomH, m.pane == paneClaude, claudeTitle, claudeBody))
+	claude := m.mark("pane:claude",
+		m.workPart(l.claude, m.pane == paneClaude, claudeTitle, claudeBody))
 
-	gitH, termH := m.rightSplit()
-	gitTitle, gitBody := m.gitPaneContent(rw-4, gitH-4)
+	gitTitle, gitBody := m.gitPaneContent(l.git.w-4, l.git.h-4)
 	if wt := m.selectedRef().wt; wt != nil && wt.Prunable {
 		gitTitle, gitBody = "git", warnStyle.Render("worktree directory is gone — press d to clean it up")
 	} else if noWT {
@@ -291,7 +272,8 @@ func (m Model) viewPanels() string {
 	if m.copiedFrom == paneDiff && time.Now().Before(m.copiedUntil) {
 		gitTitle += okStyle.Render(" · copied ✓")
 	}
-	gitPane := m.zones.Mark("pane:diff", pane(rw, gitH, m.pane == paneDiff, gitTitle, gitBody))
+	git := m.mark("pane:diff",
+		m.workPart(l.git, m.pane == paneDiff, gitTitle, gitBody))
 
 	termTitle := "shell"
 	if !noWT {
@@ -315,12 +297,56 @@ func (m Model) viewPanels() string {
 			termTitle += fmt.Sprintf(" · ↑%d", n)
 		}
 	}
-	termPane := m.zones.Mark("pane:term", pane(rw, termH, m.pane == paneTerm, termTitle, termBody))
-	right := lipgloss.JoinVertical(lipgloss.Left, gitPane, termPane)
+	term := m.mark("pane:term",
+		m.workPart(l.term, m.pane == paneTerm, termTitle, termBody))
 
-	return lipgloss.JoinVertical(lipgloss.Left,
-		top,
-		lipgloss.JoinHorizontal(lipgloss.Top, center, right))
+	switch l.mode {
+	case layFour:
+		return frame(band{{issues}, {claude}, {git}, {term}})
+	case layCols:
+		return frame(band{{issues}, {claude}, {git, term}})
+	}
+	return frame(band{{issues}}, band{{claude}, {git, term}})
+}
+
+// workPart builds one of the work panes: its title, the ═ rule under it, and
+// a body cut to the box the layout gave it.
+func (m Model) workPart(b box, focused bool, title, body string) panePart {
+	w, h := b.w-2, b.h-2
+	ts, rs := paneTitleStyle, metaStyle
+	if focused {
+		ts, rs = paneTitleFocus, okStyle
+	}
+	rows := []string{
+		padTo(ts.Render(" "+title), w),
+		rs.Render(strings.Repeat("═", w)),
+	}
+	// the body sits a column off the border, like the title above it
+	for _, r := range fitRows(body, w-1, h-2) {
+		rows = append(rows, " "+r)
+	}
+	edges := make([]edgeKind, len(rows))
+	if len(edges) > 1 {
+		edges[1] = edgeRule
+	}
+	return panePart{w: w, rows: rows, edges: edges, focused: focused}
+}
+
+// mark tags a pane's rows for the mouse. The zone covers the pane's inside,
+// which is what the click and drag handlers measure their offsets from.
+func (m Model) mark(id string, p panePart) panePart {
+	p.rows = strings.Split(m.zones.Mark(id, strings.Join(p.rows, "\n")), "\n")
+	return p
+}
+
+// issuesTitle names the issues pane, dropping the "& worktrees" half when the
+// column is too narrow to spell it out.
+func (m Model) issuesTitle(w int) string {
+	const full = "issues & worktrees"
+	if w-4 < len(full) {
+		return "issues"
+	}
+	return full
 }
 
 // noWorktreeHint explains why the claude, git and shell panes are empty: the
@@ -624,24 +650,22 @@ func truncate(s string, w int) string {
 // ansiRE strips SGR color sequences so rendered lines can be matched on text.
 var ansiRE = regexp.MustCompile("\x1b\\[[0-9;]*m")
 
-// renderTable post-processes the table view: the header rule gets a proper
-// "├" left edge, and group-header rows (marked "▸ ") become full-width rules
-// with the title inset, e.g. ├─ IN PROGRESS ──────┼──────────┼────
 // tableFrame builds the table's top/bottom border with joins matched to the
 // visible column widths: left, per-column dashes, join, …, right.
 func (m Model) tableFrame(left, join, right rune) string {
-	return m.tableRule(left, join, right, "─")
+	return metaStyle.Render(string(left) + m.tableFill(join, "─") + string(right))
 }
 
-// tableRule is tableFrame over any fill, so the pane's "═" title rule can
-// carry the same column joins as the grid below it.
-func (m Model) tableRule(left, join, right rune, fill string) string {
+// tableFill is the grid's columns as one horizontal line with no outer edges,
+// so the frame can supply its own: each visible column's width of fill, with
+// a join between. The pane's "═" title rule is this over a double line, which
+// is what carries the column joins into the frame.
+func (m Model) tableFill(join rune, fill string) string {
 	var b strings.Builder
-	b.WriteRune(left)
 	first := true
 	for _, c := range m.table.Columns() {
 		if c.Width <= 0 {
-			continue // hidden column (three-pane layout)
+			continue // hidden column (narrow layouts)
 		}
 		if !first {
 			b.WriteRune(join)
@@ -649,8 +673,27 @@ func (m Model) tableRule(left, join, right rune, fill string) string {
 		first = false
 		b.WriteString(strings.Repeat(fill, c.Width+2))
 	}
-	b.WriteRune(right)
-	return metaStyle.Render(b.String())
+	return b.String()
+}
+
+// tableJoins is where the grid's column dividers sit, as offsets into a row.
+// The frame turns them into ┬ and ┴ on the border rows above and below, so
+// the columns read as one grid rather than stopping at the pane's edge.
+func (m Model) tableJoins() []int {
+	var js []int
+	x, first := 0, true
+	for _, c := range m.table.Columns() {
+		if c.Width <= 0 {
+			continue
+		}
+		if !first {
+			js = append(js, x)
+			x++
+		}
+		first = false
+		x += c.Width + 2
+	}
+	return js
 }
 
 // tableWidth is the grid's rendered width, borders included.
@@ -664,21 +707,13 @@ func (m Model) tableWidth() int {
 	return w
 }
 
-// tableGrid is the table's rows: header, its rule, the group dividers and the
-// cards, each line carrying the side edges that frame the grid.
-func (m Model) tableGrid() []string {
-	totalW := 0
-	for _, c := range m.table.Columns() {
-		if c.Width > 0 {
-			totalW += c.Width + 3
-		}
-	}
+// tableGrid is the table's rows — the header, its rule, the group dividers and
+// the cards — with the outer edges left off for the frame to draw, and what
+// each row presents to them.
+func (m Model) tableGrid() ([]string, []edgeKind) {
 	lines := strings.Split(m.table.View(), "\n")
-	if len(lines) > 1 {
-		lines[1] = strings.Replace(lines[1], "┼", "├", 1)
-	}
+	edges := make([]edgeKind, len(lines))
 	tintedDivider := metaStyle.Render("│")
-	rightEdge := tintedDivider
 	for i, line := range lines {
 		plain := ansiRE.ReplaceAllString(line, "")
 		if idx := strings.Index(plain, "▸ "); idx >= 0 && strings.Trim(plain[:idx], "│ ") == "" {
@@ -687,86 +722,118 @@ func (m Model) tableGrid() []string {
 			if j := strings.IndexRune(title, '│'); j >= 0 {
 				title = title[:j]
 			}
-			lines[i] = m.groupDividerLine(strings.TrimSpace(title)) + metaStyle.Render("┤")
+			lines[i], edges[i] = m.groupDividerLine(strings.TrimSpace(title)), edgeCross
 			continue
 		}
-		if i == 1 { // header rule meets the right edge with a join
-			lines[i] = line + metaStyle.Render("┤")
+		if i == 1 { // the header's rule, its joins already in place
+			lines[i], edges[i] = dropEdge(line), edgeCross
 			continue
 		}
 		if strings.TrimSpace(plain) == "" { // viewport filler below the rows
 			var fb strings.Builder
+			first := true
 			for _, c := range m.table.Columns() {
 				if c.Width <= 0 {
 					continue
 				}
-				fb.WriteString("│" + strings.Repeat(" ", c.Width+2))
+				if !first {
+					fb.WriteString("│")
+				}
+				first = false
+				fb.WriteString(strings.Repeat(" ", c.Width+2))
 			}
-			fb.WriteString("│")
 			lines[i] = metaStyle.Render(fb.String())
 			continue
 		}
 		// Cell dividers are rendered uncolored so the Selected row style
 		// isn't cut off by an embedded ANSI reset; tint them subtle on the
 		// remaining (unstyled) rows. The selected row keeps accent dividers.
+		line = dropEdge(line)
 		if i > 1 && !strings.Contains(line, "\x1b") {
 			line = strings.ReplaceAll(line, "│", tintedDivider)
 		}
-		lines[i] = line + rightEdge
+		lines[i] = line
 	}
-	return lines
+	return lines, edges
+}
+
+// dropEdge removes a row's leading border character. The table widget draws
+// one for the first column's cell, where the frame draws its own.
+func dropEdge(s string) string {
+	for i, r := range s {
+		switch r {
+		case '│', '┼', '├':
+			return s[:i] + s[i+len(string(r)):]
+		}
+	}
+	return s
 }
 
 // renderTable boxes the grid on its own, for the narrow single-column layout.
 func (m Model) renderTable() string {
-	return m.tableFrame('┌', '┬', '┐') + "\n" +
-		strings.Join(m.tableGrid(), "\n") + "\n" +
-		m.tableFrame('└', '┴', '┘')
+	rows, edges := m.tableGrid()
+	var b strings.Builder
+	b.WriteString(m.tableFrame('┌', '┬', '┐') + "\n")
+	for i, row := range rows {
+		left, right := "│", "│"
+		if edges[i] == edgeCross {
+			left, right = "├", "┤"
+		}
+		b.WriteString(metaStyle.Render(left) + row + metaStyle.Render(right) + "\n")
+	}
+	b.WriteString(m.tableFrame('└', '┴', '┘'))
+	return b.String()
 }
 
-// issuesPane draws the issues list as one grid with its pane: the title rule
-// doubles as the table's top edge, the rows' own dividers are the side
-// borders, and the bottom border closes the columns off. Nesting a boxed
-// table inside a boxed pane would double every edge and cost two lines.
-func (m Model) issuesPane(title string) string {
-	inner := m.tableWidth() - 2
-	var b strings.Builder
-	b.WriteString(metaStyle.Render("╭"+strings.Repeat("─", inner)+"╮") + "\n")
-	name := truncate(title, inner-1)
-	b.WriteString(metaStyle.Render("│") +
-		paneTitleFocus.Render(" "+name) +
-		strings.Repeat(" ", inner-1-lipgloss.Width(name)) +
-		metaStyle.Render("│") + "\n")
-	b.WriteString(m.tableRule('╞', '╤', '╡', "═") + "\n")
-	b.WriteString(strings.Join(m.tableGrid(), "\n") + "\n")
-	b.WriteString(m.tableRule('╰', '┴', '╯', "─"))
-	return b.String()
+// issuesPart is the issues list as a pane: the grid is the pane, its own
+// column dividers standing in for any inner border, and its columns carrying
+// joins out into the frame. Nesting a boxed table inside a boxed pane would
+// double every edge and cost two lines.
+func (m Model) issuesPart(title string, focused bool) panePart {
+	ts, fs := paneTitleStyle, metaStyle
+	if focused {
+		ts, fs = paneTitleFocus, okStyle
+	}
+	w := m.tableWidth() - 2
+	rows := []string{
+		padTo(ts.Render(" "+truncate(title, w-1)), w),
+		fs.Render(m.tableFill('╤', "═")),
+	}
+	edges := []edgeKind{edgeBody, edgeRule}
+	grid, gridEdges := m.tableGrid()
+	return panePart{
+		w:       w,
+		rows:    append(rows, grid...),
+		edges:   append(edges, gridEdges...),
+		botJoin: m.tableJoins(),
+		focused: focused,
+	}
 }
 
 // groupDividerLine draws a rule across all columns, intersections aligned
 // with the cell dividers, with the group title inset after the left edge.
 func (m Model) groupDividerLine(title string) string {
 	var rule []rune
-	for i, c := range m.table.Columns() {
+	first := true
+	for _, c := range m.table.Columns() {
 		if c.Width <= 0 {
-			continue // hidden column (three-pane layout)
+			continue // hidden column (narrow layouts)
 		}
-		edge := '┼'
-		if i == 0 {
-			edge = '├'
+		if !first {
+			rule = append(rule, '┼')
 		}
-		rule = append(rule, edge)
+		first = false
 		for j := 0; j < c.Width+2; j++ {
 			rule = append(rule, '─')
 		}
 	}
 	text := []rune(" " + title + " ")
-	if max := len(rule) - 4; len(text) > max {
+	if max := len(rule) - 3; len(text) > max && max > 0 {
 		text = text[:max]
 	}
-	return metaStyle.Render(string(rule[:2])) +
+	return metaStyle.Render(string(rule[:1])) +
 		groupTitleStyle.Render(string(text)) +
-		metaStyle.Render(string(rule[2+len(text):]))
+		metaStyle.Render(string(rule[1+len(text):]))
 }
 
 func padRight(s string, w int) string {

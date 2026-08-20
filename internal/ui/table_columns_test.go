@@ -75,7 +75,10 @@ func TestAssigneeColumnDropsWhenNarrow(t *testing.T) {
 	for _, tc := range []struct {
 		width   int
 		visible bool
-	}{{60, false}, {80, false}, {90, false}, {91, true}, {120, true}, {200, true}} {
+		// 179 is as wide as the stacked layout goes: past it the issues
+		// list becomes a column of its own and sheds cells again, which
+		// TestColumnLayoutFitsItsColumns covers
+	}{{60, false}, {80, false}, {90, false}, {91, true}, {120, true}, {179, true}} {
 		m := withIssues(newTestModel(t, tc.width))
 		w, ok := columnWidth(m, "ASSIGNEE")
 		if !ok {
@@ -105,7 +108,7 @@ func TestAssigneeColumnDropsWhenNarrow(t *testing.T) {
 // TestTableRowsMatchColumns guards renderRow, which indexes the column set
 // per row cell and panics if a row carries more cells than there are columns.
 func TestTableRowsMatchColumns(t *testing.T) {
-	for _, width := range []int{60, 80, 91, 120, 200} {
+	for _, width := range []int{60, 80, 91, 120, 179, 200, 260} {
 		m := withIssues(newTestModel(t, width))
 		// a spare worktree row and group headers, not just card rows
 		m.refreshRows()
