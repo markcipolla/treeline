@@ -718,7 +718,8 @@ func (m Model) tableWidth() int {
 func (m Model) tableGrid() ([]string, []edgeKind) {
 	lines := strings.Split(m.table.View(), "\n")
 	edges := make([]edgeKind, len(lines))
-	tintedDivider := metaStyle.Render("│")
+	chrome := m.gridChrome()
+	tintedDivider := chrome.Render("│")
 	for i, line := range lines {
 		plain := ansiRE.ReplaceAllString(line, "")
 		if idx := strings.Index(plain, "▸ "); idx >= 0 && strings.Trim(plain[:idx], "│ ") == "" {
@@ -747,7 +748,7 @@ func (m Model) tableGrid() ([]string, []edgeKind) {
 				first = false
 				fb.WriteString(strings.Repeat(" ", c.Width+2))
 			}
-			lines[i] = metaStyle.Render(fb.String())
+			lines[i] = chrome.Render(fb.String())
 			continue
 		}
 		// Cell dividers are rendered uncolored so the Selected row style
@@ -836,9 +837,13 @@ func (m Model) groupDividerLine(title string) string {
 	if max := len(rule) - 3; len(text) > max && max > 0 {
 		text = text[:max]
 	}
-	return metaStyle.Render(string(rule[:1])) +
-		groupTitleStyle.Render(string(text)) +
-		metaStyle.Render(string(rule[1+len(text):]))
+	chrome, name := m.gridChrome(), groupTitleStyle
+	if m.gridFocused() {
+		name = groupTitleFocus
+	}
+	return chrome.Render(string(rule[:1])) +
+		name.Render(string(text)) +
+		chrome.Render(string(rule[1+len(text):]))
 }
 
 func padRight(s string, w int) string {

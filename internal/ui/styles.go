@@ -21,6 +21,7 @@ var (
 	headerDivider = lipgloss.Border{Left: "│", Bottom: "─", BottomLeft: "┼"}
 
 	groupTitleStyle = lipgloss.NewStyle().Bold(true).Foreground(subtle)
+	groupTitleFocus = lipgloss.NewStyle().Bold(true).Foreground(accent)
 
 	// the panel layout draws its own borders (see frame.go); the panes only
 	// style their titles, and metaStyle/okStyle tint the frame by focus

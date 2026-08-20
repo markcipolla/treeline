@@ -205,13 +205,7 @@ type Model struct {
 }
 
 func New(cfg *config.Config, root string) Model {
-	styles := table.DefaultStyles()
-	styles.Header = styles.Header.Bold(true).Foreground(subtle).BorderStyle(headerDivider).BorderForeground(subtle).BorderLeft(true).BorderBottom(true)
-	// No BorderForeground here: a colored divider embeds an ANSI reset that
-	// would cut the Selected row highlight off at the first "│". Dividers on
-	// unselected rows are tinted in renderTable instead.
-	styles.Cell = styles.Cell.BorderStyle(cellDivider).BorderLeft(true)
-	styles.Selected = styles.Selected.Foreground(accent).Bold(true).Background(selBg)
+	styles := tableStyles(false)
 
 	t := table.New(
 		table.WithColumns([]table.Column{
@@ -793,6 +787,9 @@ func (m *Model) resize() {
 		w = 40
 	}
 
+	// the grid's chrome follows focus, and focus changes come through here
+	m.table.SetStyles(tableStyles(m.gridFocused()))
+
 	l := m.layout()
 	if m.threePane() {
 		// the grid is the pane: only the top border, the title and the
@@ -840,6 +837,41 @@ func (m *Model) resize() {
 	for i := range m.authInputs {
 		m.authInputs[i].Width = inputW
 	}
+}
+
+// tableStyles is the issue grid's styling. Its chrome — the header labels and
+// the rule under them — takes the accent with the pane border when the list
+// has focus, so the whole grid reads as the focused panel rather than a grey
+// table inside a green box.
+func tableStyles(focused bool) table.Styles {
+	chrome := subtle
+	if focused {
+		chrome = accent
+	}
+	s := table.DefaultStyles()
+	s.Header = s.Header.Bold(true).Foreground(chrome).
+		BorderStyle(headerDivider).BorderForeground(chrome).
+		BorderLeft(true).BorderBottom(true)
+	// No BorderForeground on the cells: a colored divider embeds an ANSI reset
+	// that would cut the Selected row's band off at the first "│". Dividers on
+	// unselected rows are tinted in tableGrid instead.
+	s.Cell = s.Cell.BorderStyle(cellDivider).BorderLeft(true)
+	s.Selected = s.Selected.Foreground(accent).Bold(true).Background(selBg)
+	return s
+}
+
+// gridFocused reports whether the issues grid should wear the accent. On a
+// narrow terminal the table is the whole screen and there is no other pane to
+// hold focus, so it stays subtle there.
+func (m Model) gridFocused() bool { return m.threePane() && m.pane == paneIssues }
+
+// gridChrome styles the grid's own lines: the cell dividers, the group
+// dividers and the filler below the rows.
+func (m Model) gridChrome() lipgloss.Style {
+	if m.gridFocused() {
+		return okStyle
+	}
+	return metaStyle
 }
 
 // setTableLayout sizes the issue table's columns for the given width. Columns
