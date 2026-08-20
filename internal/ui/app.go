@@ -2319,6 +2319,8 @@ func (m Model) handleClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			return m.openManual()
 		case m.clicked(msg, "btn:search"):
 			return m.openSearch()
+		case m.clicked(msg, "btn:settings"):
+			return m.openSettings()
 		case m.clicked(msg, "pane:issues"):
 			return m.focusPane(paneIssues)
 		}
