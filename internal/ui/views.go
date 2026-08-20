@@ -106,6 +106,19 @@ func (m Model) viewHeader() string {
 	if w < 20 {
 		w = 20
 	}
+	// settings sits top-right, past the linear status. Only on the main
+	// screen: the settings screen is where the button leads, and the modal
+	// screens have their own buttons.
+	if m.screen == scrMain {
+		gear := m.button("btn:settings", "⚙ settings", false)
+		if lipgloss.Width(left)+lipgloss.Width(right)+lipgloss.Width(gear)+4 > w {
+			gear = m.button("btn:settings", "⚙", false) // tight header: bare gear
+		}
+		if right != "" {
+			right += "  "
+		}
+		right += gear
+	}
 	gap := w - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 2 {
 		gap = 2
