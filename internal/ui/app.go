@@ -992,6 +992,38 @@ func (m *Model) refreshRows() {
 	m.settleCursor(false)
 }
 
+// moveCards moves the cursor by n selectable rows, counting cards and
+// worktrees only. Moving by raw table rows instead would count the group
+// headers, so a single wheel notch in a list of short sections skipped past
+// whole groups rather than stepping card to card.
+func (m *Model) moveCards(n int) {
+	if len(m.refs) == 0 {
+		return
+	}
+	step := 1
+	if n < 0 {
+		step, n = -1, -n
+	}
+	cur := m.table.Cursor()
+	if cur < 0 || cur >= len(m.refs) {
+		cur = 0
+	}
+	for ; n > 0; n-- {
+		next := -1
+		for i := cur + step; i >= 0 && i < len(m.refs); i += step {
+			if m.refs[i].kind != rowHeader {
+				next = i
+				break
+			}
+		}
+		if next < 0 {
+			break // already on the first or last card
+		}
+		cur = next
+	}
+	m.table.SetCursor(cur)
+}
+
 // settleCursor moves the cursor off group-header rows, preferring the given
 // direction and falling back to the other.
 func (m *Model) settleCursor(preferUp bool) {
@@ -2038,11 +2070,10 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				return m, cmd
 			}
 			if up {
-				m.table.MoveUp(3)
+				m.moveCards(-1)
 			} else {
-				m.table.MoveDown(3)
+				m.moveCards(1)
 			}
-			m.settleCursor(up)
 			return m, m.syncPanes()
 		case scrDetail:
 			var cmd tea.Cmd
