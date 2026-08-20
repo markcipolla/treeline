@@ -80,6 +80,8 @@ type Model struct {
 	loadingCI     bool
 	authed        bool
 	viewer        linear.Viewer
+	linearBusy    bool // a card fetch is in flight (incl. background ticks)
+	linearFail    bool // the most recent fetch failed
 
 	// create flow
 	pendKey     string // issue key like LMAP-142; "" for free-form branches
@@ -231,6 +233,7 @@ func New(cfg *config.Config, root string) Model {
 		authInputs:    authInputs,
 		loadingWT:     true,
 		loadingIssues: cfg.Linear.Token().Usable(),
+		linearBusy:    cfg.Linear.Token().Usable(),
 		authed:        cfg.Linear.Token().Usable(),
 	}
 }
@@ -279,11 +282,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// silent background refresh of the cards, re-armed every 30s
 		cmds := []tea.Cmd{issuesTickCmd()}
 		if m.authed {
+			m.linearBusy = true
 			cmds = append(cmds, loadIssuesCmd(m.cfg))
 		}
 		return m, tea.Batch(cmds...)
 
 	case issuesMsg:
+		m.linearBusy = false
+		m.linearFail = msg.err != nil
 		if msg.err != nil {
 			// only surface failures the user asked for; background
 			// refreshes retry in 30s anyway
@@ -475,6 +481,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.authed = true
 		m.loadingIssues = true
+		m.linearBusy = true
 		m.screen = scrMain
 		return m, loadIssuesCmd(m.cfg)
 
@@ -1199,6 +1206,7 @@ func (m Model) keyMain(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		cmds := []tea.Cmd{loadWorktreesCmd(m.root)}
 		if m.authed {
 			m.loadingIssues = true
+			m.linearBusy = true
 			cmds = append(cmds, loadIssuesCmd(m.cfg))
 		}
 		if c := m.reloadGit(); c != nil {
