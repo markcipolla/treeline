@@ -37,7 +37,13 @@ func TestViewSmoke(t *testing.T) {
 		if v == "" {
 			t.Fatalf("empty view at %dx%d", size[0], size[1])
 		}
-		for _, join := range []string{"┌", "┬", "┐", "├", "┤", "└", "┴", "┘"} {
+		// the narrow layout boxes the table on its own; the panel layout
+		// merges it into the issues pane, whose corners are rounded
+		frame := []string{"┌", "┬", "┐", "├", "┤", "└", "┴", "┘"}
+		if model.threePane() {
+			frame = []string{"╭", "╤", "╮", "├", "┤", "╰", "┴", "╯"}
+		}
+		for _, join := range frame {
 			if !strings.Contains(v, join) {
 				t.Fatalf("table frame missing %q at %dx%d", join, size[0], size[1])
 			}

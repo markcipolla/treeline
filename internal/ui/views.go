@@ -232,7 +232,7 @@ func (m Model) viewPanels() string {
 
 	var top string
 	if m.pane == paneIssues {
-		top = pane(w, topH, true, "issues & worktrees", m.renderTable())
+		top = m.issuesPane("issues & worktrees")
 	} else {
 		top = paneStyle.Width(w - 2).Height(topH - 2).Render(m.collapsedIssueLine(w - 4))
 	}
@@ -630,6 +630,12 @@ var ansiRE = regexp.MustCompile("\x1b\\[[0-9;]*m")
 // tableFrame builds the table's top/bottom border with joins matched to the
 // visible column widths: left, per-column dashes, join, …, right.
 func (m Model) tableFrame(left, join, right rune) string {
+	return m.tableRule(left, join, right, "─")
+}
+
+// tableRule is tableFrame over any fill, so the pane's "═" title rule can
+// carry the same column joins as the grid below it.
+func (m Model) tableRule(left, join, right rune, fill string) string {
 	var b strings.Builder
 	b.WriteRune(left)
 	first := true
@@ -641,13 +647,26 @@ func (m Model) tableFrame(left, join, right rune) string {
 			b.WriteRune(join)
 		}
 		first = false
-		b.WriteString(strings.Repeat("─", c.Width+2))
+		b.WriteString(strings.Repeat(fill, c.Width+2))
 	}
 	b.WriteRune(right)
 	return metaStyle.Render(b.String())
 }
 
-func (m Model) renderTable() string {
+// tableWidth is the grid's rendered width, borders included.
+func (m Model) tableWidth() int {
+	w := 1
+	for _, c := range m.table.Columns() {
+		if c.Width > 0 {
+			w += c.Width + 3
+		}
+	}
+	return w
+}
+
+// tableGrid is the table's rows: header, its rule, the group dividers and the
+// cards, each line carrying the side edges that frame the grid.
+func (m Model) tableGrid() []string {
 	totalW := 0
 	for _, c := range m.table.Columns() {
 		if c.Width > 0 {
@@ -695,9 +714,33 @@ func (m Model) renderTable() string {
 		}
 		lines[i] = line + rightEdge
 	}
+	return lines
+}
+
+// renderTable boxes the grid on its own, for the narrow single-column layout.
+func (m Model) renderTable() string {
 	return m.tableFrame('┌', '┬', '┐') + "\n" +
-		strings.Join(lines, "\n") + "\n" +
+		strings.Join(m.tableGrid(), "\n") + "\n" +
 		m.tableFrame('└', '┴', '┘')
+}
+
+// issuesPane draws the issues list as one grid with its pane: the title rule
+// doubles as the table's top edge, the rows' own dividers are the side
+// borders, and the bottom border closes the columns off. Nesting a boxed
+// table inside a boxed pane would double every edge and cost two lines.
+func (m Model) issuesPane(title string) string {
+	inner := m.tableWidth() - 2
+	var b strings.Builder
+	b.WriteString(metaStyle.Render("╭"+strings.Repeat("─", inner)+"╮") + "\n")
+	name := truncate(title, inner-1)
+	b.WriteString(metaStyle.Render("│") +
+		paneTitleFocus.Render(" "+name) +
+		strings.Repeat(" ", inner-1-lipgloss.Width(name)) +
+		metaStyle.Render("│") + "\n")
+	b.WriteString(m.tableRule('╞', '╤', '╡', "═") + "\n")
+	b.WriteString(strings.Join(m.tableGrid(), "\n") + "\n")
+	b.WriteString(m.tableRule('╰', '┴', '╯', "─"))
+	return b.String()
 }
 
 // groupDividerLine draws a rule across all columns, intersections aligned
