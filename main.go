@@ -50,13 +50,15 @@ flags:
 const shellInit = `# treeline shell integration — add to your .zshrc:  eval "$(treeline shell-init)"
 # wraps the treeline command so jumping into a worktree cd's your shell
 treeline() {
-  local f
+  local f rc
   f="$(mktemp "${TMPDIR:-/tmp}/treeline-cd.XXXXXX")" || return
   command treeline --cd-file "$f" "$@"
+  rc=$?
   if [ -s "$f" ]; then
-    cd "$(cat "$f")" || return
+    cd "$(cat "$f")" || rc=1
   fi
   rm -f "$f"
+  return $rc
 }
 tl() { treeline "$@"; }
 `
