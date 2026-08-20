@@ -801,6 +801,17 @@ func (m *Model) refreshRows() {
 		g.issues = append(g.issues, is)
 	}
 	sort.SliceStable(groups, func(a, b int) bool { return groups[a].rank < groups[b].rank })
+	// within a group: urgent → low, unprioritized last, updatedAt preserved
+	prio := func(p int) int {
+		if p == 0 {
+			return 5
+		}
+		return p
+	}
+	for _, g := range groups {
+		is := g.issues
+		sort.SliceStable(is, func(a, b int) bool { return prio(is[a].Priority) < prio(is[b].Priority) })
+	}
 
 	var rows []table.Row
 	var refs []rowRef
