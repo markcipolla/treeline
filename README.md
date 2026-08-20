@@ -82,12 +82,27 @@ an issue are grouped at the bottom.
 | `enter` | issue without worktree | create worktree for it |
 | `v` | issue row | issue details (scrollable) |
 | `n` | — | manual entry: issue key or free-form branch |
-| `d` | row with worktree | remove worktree (`y` keep branch, `b` delete branch too) |
+| `d` | row with worktree | remove worktree (`y` keep branch, `b` delete branch too; locked worktrees ask again, see [below](#locked-worktrees)) |
 | `/` | — | filter the table |
 | `r` | — | refresh issues, worktrees, and CI |
 | `a` | — | connect / reconnect Linear |
 | `g` | — | connect GitHub (CI) |
 | `q` / `ctrl+c` | — | quit |
+
+### Locked worktrees
+
+A worktree can be locked — claude locks the one it is working in, recording
+a reason like `claude session encapsulated-shimmying-sparrow (pid 65825)`.
+Git then refuses to remove it, and needs a second `--force` to be talked out
+of it. The remove modal names the lock before you commit to anything, and if
+git refuses anyway it asks a second time with the buttons relabelled
+`force remove` / `force remove + delete branch`, defaulting to cancel.
+Forcing pulls the directory out from under whatever holds the lock, so a
+claude session still working in there loses its files.
+
+`treeline rm` does the same from the shell: it prints the lock reason and
+asks, and `--force` answers yes to both that and the uncommitted-changes
+prompt.
 
 The mouse works too: click buttons and branch-type options; scroll the
 table and detail view with the wheel.
