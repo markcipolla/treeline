@@ -16,8 +16,8 @@ func plainRows(v string) []string {
 	return rows
 }
 
-// panelRows is the rows of the panel itself, from its top border to its
-// bottom one, with the doc padding trimmed off each end.
+// panelRows is the rows of the panel itself, from its first top border to its
+// last bottom one, with the doc padding trimmed off each end.
 func panelRows(t *testing.T, m Model) []string {
 	t.Helper()
 	var out []string
@@ -26,10 +26,11 @@ func panelRows(t *testing.T, m Model) []string {
 		if len(out) == 0 && !strings.HasPrefix(r, "╭") {
 			continue
 		}
-		out = append(out, r)
-		if len(out) > 1 && strings.HasPrefix(r, "╰") {
+		// the panel ends where the rows stop starting with a border glyph
+		if len(out) > 0 && !strings.ContainsRune("╭│├╞╰", []rune(r + " ")[0]) {
 			break
 		}
+		out = append(out, r)
 	}
 	if len(out) == 0 {
 		t.Fatalf("no panel in:\n%s", m.View())
@@ -37,10 +38,11 @@ func panelRows(t *testing.T, m Model) []string {
 	return out
 }
 
-// TestFrameSharesBorders: neighbouring panes share the line between them. Two
-// boxes pushed together read as a doubled seam, which is what the frame exists
-// to avoid — at four columns that would be three seams of wasted width.
-func TestFrameSharesBorders(t *testing.T) {
+// TestFrameBoxesAreClosed: every pane is its own box. Panes sit flush, so the
+// seam between two of them is two lines thick — what must not happen is one
+// pane's border merging into the next, which is how a rule inside the issues
+// grid ends up T-joining the pane beside it.
+func TestFrameBoxesAreClosed(t *testing.T) {
 	for _, width := range []int{110, 160, 200, 260, 320} {
 		m := withIssues(newTestModel(t, width))
 		m.height = 34
@@ -50,81 +52,93 @@ func TestFrameSharesBorders(t *testing.T) {
 		}
 		for _, pane := range []int{paneIssues, paneClaude, paneDiff, paneTerm} {
 			mm, _ := m.focusPane(pane)
-			for n, row := range panelRows(t, mm.(Model)) {
-				if strings.Contains(row, "││") {
-					t.Errorf("%d cols pane %d: doubled seam on row %d: %q",
+			rows := panelRows(t, mm.(Model))
+
+			// ╪ only appears where two panes' title rules run into each
+			// other, which is exactly what closed boxes prevent
+			for n, row := range rows {
+				if strings.Contains(row, "╪") {
+					t.Errorf("%d cols pane %d: shared rule join on row %d: %q",
 						width, pane, n, row)
+				}
+			}
+			// each top border row opens and closes as many boxes as it draws
+			top := rows[0]
+			if o, c := strings.Count(top, "╭"), strings.Count(top, "╮"); o != c || o == 0 {
+				t.Errorf("%d cols pane %d: top border opens %d boxes and closes %d: %q",
+					width, pane, o, c, top)
+			}
+			// ...and no pane's rule reaches past its own box
+			for n, row := range rows {
+				o, c := strings.Count(row, "╞"), strings.Count(row, "╡")
+				if o != c {
+					t.Errorf("%d cols pane %d: row %d has %d ╞ and %d ╡: %q",
+						width, pane, n, o, c, row)
 				}
 			}
 		}
 	}
 }
 
-// TestFrameJunctions: where lines meet, the glyph has to say so. A ╮ left in
-// the middle of the top border (or a ╡ mid-rule) is the tell-tale of boxes
-// merely placed side by side.
-func TestFrameJunctions(t *testing.T) {
-	m := withIssues(newTestModel(t, 260))
-	m.height = 34
-	m.resize()
-	if !m.selectWorktree(m.wts[1].Path) {
-		t.Fatal("no row for the second worktree")
-	}
-	rows := panelRows(t, m)
-	top, bottom := rows[0], rows[len(rows)-1]
-
-	// four columns, so three seams meeting the top and bottom borders
-	if got := strings.Count(top, "┬"); got != 3 {
-		t.Errorf("top border has %d ┬ joins, want 3: %q", got, top)
-	}
-	if strings.Contains(top[1:len(top)-len("╮")], "╮") {
-		t.Errorf("a pane corner is stranded in the top border: %q", top)
-	}
-	if got := strings.Count(bottom, "┴"); got < 3 {
-		t.Errorf("bottom border has %d ┴ joins, want at least 3: %q", got, bottom)
-	}
-
-	// the title rules of neighbouring panes meet with ╪, and the frame's own
-	// edges close them off with ╞ and ╡
-	rule := rows[2]
-	if got := strings.Count(rule, "╪"); got != 3 {
-		t.Errorf("title rule has %d ╪ joins, want 3: %q", got, rule)
-	}
-	if !strings.HasPrefix(rule, "╞") || !strings.HasSuffix(rule, "╡") {
-		t.Errorf("title rule does not meet the frame's edges: %q", rule)
+// TestFrameSeamsAreTwoLines: neighbouring panes each keep their own edge, so a
+// content row of the column layouts crosses a "││" seam per boundary.
+func TestFrameSeamsAreTwoLines(t *testing.T) {
+	for _, tc := range []struct{ width, seams int }{
+		{200, 2}, // issues │ claude │ git-over-shell
+		{260, 3}, // issues │ claude │ git │ shell
+	} {
+		m := withIssues(newTestModel(t, tc.width))
+		m.height = 34
+		m.resize()
+		if !m.selectWorktree(m.wts[1].Path) {
+			t.Fatal("no row for the second worktree")
+		}
+		rows := panelRows(t, m)
+		// the title row: every pane has one, so every seam shows on it
+		if got := strings.Count(rows[1], "││"); got != tc.seams {
+			t.Errorf("%d cols: title row has %d seams, want %d: %q",
+				tc.width, got, tc.seams, rows[1])
+		}
 	}
 }
 
-// TestFrameStackedSeam: in the stacked layout the issues strip's bottom border
-// is also the top of the panes below, so the grid's column joins (┴) and the
-// seam starting below it (┬) share one row.
-func TestFrameStackedSeam(t *testing.T) {
+// TestFrameGridJoinsItsOwnBox: the issues grid's columns still meet the pane's
+// bottom border with ┴, and its group dividers close on the pane's own edge —
+// the grid is that pane, and only that pane.
+func TestFrameGridJoinsItsOwnBox(t *testing.T) {
 	m := withIssues(newTestModel(t, 160))
 	m.height = 34
 	m.resize()
 	rows := panelRows(t, m)
 
-	seam := ""
+	var divider, bottom string
 	for _, r := range rows {
-		if strings.HasPrefix(r, "├") && strings.Contains(r, "┬") && strings.Contains(r, "┴") {
-			seam = r
+		if strings.HasPrefix(r, "├─ ") && divider == "" {
+			divider = r
+		}
+		if strings.HasPrefix(r, "╰") && strings.Contains(r, "┴") {
+			bottom = r
 			break
 		}
 	}
-	if seam == "" {
-		t.Fatalf("no band seam carrying both ┴ and ┬ in:\n%s", strings.Join(rows, "\n"))
+	if divider == "" {
+		t.Fatalf("no group divider in:\n%s", strings.Join(rows, "\n"))
 	}
-	if !strings.HasSuffix(seam, "┤") {
-		t.Errorf("the band seam does not close on the frame's edge: %q", seam)
+	if !strings.HasSuffix(divider, "┤") {
+		t.Errorf("a group divider does not close on the pane's edge: %q", divider)
 	}
-	if strings.Contains(seam, "╰") || strings.Contains(seam, "╭") {
-		t.Errorf("pane corners stranded in the band seam: %q", seam)
+	if bottom == "" {
+		t.Fatalf("the issues pane's bottom border carries no column joins:\n%s",
+			strings.Join(rows, "\n"))
+	}
+	if !strings.HasSuffix(bottom, "╯") {
+		t.Errorf("the issues pane's bottom border is not closed: %q", bottom)
 	}
 }
 
 // TestFrameRowsAreRectangular: every row of the frame is exactly as wide as
-// its borders, whatever the panes put inside. A pane that renders something
-// too wide must be cut, not left to shear the columns below it.
+// the panel, whatever the panes put inside. A pane that renders something too
+// wide must be cut, not left to shear the columns below it.
 func TestFrameRowsAreRectangular(t *testing.T) {
 	for _, width := range []int{110, 180, 240, 300} {
 		m := withIssues(newTestModel(t, width))

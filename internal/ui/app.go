@@ -958,7 +958,11 @@ func (m *Model) setTableLayout(w, h int) {
 	}
 	m.table.SetWidth(w)
 	// renderTable adds a top and bottom frame line around the widget
-	m.table.SetHeight(h - 2)
+	rows := h - 2
+	if rows < 1 {
+		rows = 1 // a strip this short is collapsed to a single line anyway
+	}
+	m.table.SetHeight(rows)
 }
 
 // refreshRows rebuilds the table: issues grouped by status (active work

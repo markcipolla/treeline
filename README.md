@@ -130,9 +130,11 @@ grid, never so far that the work panes stop being usable. A narrow issues
 column drops the cells it can do without — ASSIGNEE, then REPO, then
 WORKTREE and PRIORITY — to keep titles readable.
 
-Panes that meet share the line between them, and each junction is drawn with
-the glyph for the lines that actually meet there, so the panels read as one
-grid rather than as boxes pushed together.
+Every panel draws its own border and they sit flush, so the seam between two
+of them is two lines thick. Sharing one line reads tighter, but then a rule
+inside one panel — the issues grid's dividers — has to T-join the border of
+the panel beside it, and a focused panel's highlight runs into its
+neighbour's edge.
 
 ### The git pane
 

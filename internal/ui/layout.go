@@ -103,21 +103,19 @@ func (m Model) layout() layout {
 
 	switch l.mode {
 	case layStack:
-		// panes that meet share the border between them, so the boxes add up
-		// to one row (and column) more than the space they fill, per seam
-		topH, bottomH := stackHeights(avail+1, m.pane == paneIssues)
-		gitH, termH := splitRight(bottomH + 1)
-		lw := (w + 1) / 2
+		topH, bottomH := stackHeights(avail, m.pane == paneIssues)
+		gitH, termH := splitRight(bottomH)
+		lw := w / 2
 		l.issues = box{w, topH}
 		l.claude = box{lw, bottomH}
-		l.git = box{w + 1 - lw, gitH}
-		l.term = box{w + 1 - lw, termH}
+		l.git = box{w - lw, gitH}
+		l.term = box{w - lw, termH}
 
 	case layCols:
 		iw := m.issuesColWidth(clampW(w*32/100, 50, 72), w)
-		rest := w + 2 - iw
+		rest := w - iw
 		cw := rest * 55 / 100
-		gitH, termH := splitRight(avail + 1)
+		gitH, termH := splitRight(avail)
 		l.issues = box{iw, avail}
 		l.claude = box{cw, avail}
 		l.git = box{rest - cw, gitH}
@@ -125,7 +123,7 @@ func (m Model) layout() layout {
 
 	case layFour:
 		iw := m.issuesColWidth(clampW(w*26/100, 50, 64), w)
-		rest := w + 3 - iw
+		rest := w - iw
 		cw := rest * 38 / 100
 		gw := rest * 34 / 100
 		l.issues = box{iw, avail}
@@ -166,7 +164,11 @@ func stackHeights(avail int, issuesFocused bool) (topH, bottomH int) {
 }
 
 // splitRight divides a column between the git pane and the shell below it.
+// Both need their chrome — two borders, a title and its rule — before any
+// content shows, so on a column too short for the preferred split they halve
+// what there is rather than one of them squeezing the other out of existence.
 func splitRight(h int) (gitH, termH int) {
+	const minPane = 5
 	gitH = h * 3 / 5
 	if gitH < 8 {
 		gitH = 8
@@ -175,6 +177,10 @@ func splitRight(h int) (gitH, termH int) {
 	if termH < 6 {
 		termH = 6
 		gitH = h - termH
+	}
+	if gitH < minPane || termH < minPane {
+		gitH = h / 2
+		termH = h - gitH
 	}
 	return gitH, termH
 }

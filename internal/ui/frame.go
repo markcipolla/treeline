@@ -6,15 +6,17 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// The panel layout is drawn as one border grid rather than as boxes pushed
-// together: neighbouring panes share the line between them, and every junction
-// gets the glyph for the lines that actually meet there. Two bordered boxes
-// side by side would read as a doubled seam ("││"), and with four columns
-// that is three seams of wasted space and weight.
+// The panel layout is composed from closed boxes: every pane draws its own
+// four borders, and they sit flush, so the seam between two panes is two lines
+// thick. Sharing one line between neighbours reads tighter, but then a rule
+// inside one pane — the issues grid's header rule and group dividers — has to
+// T-join the border of the pane beside it, and a focused pane's highlight runs
+// into its neighbour's edge. Every panel owning its own border keeps the two
+// apart, which is worth a column per seam.
 //
-// A pane hands the frame its inside — rows of an exact width — plus what each
-// row presents to the borders on either side, so a rule inside a pane can run
-// out into the frame as a proper ├ or ╞ instead of stopping at the edge.
+// A pane still hands the frame its inside rather than drawing itself: rows of
+// an exact width, what each row presents to the borders beside it, and where
+// its own dividers meet the borders above and below.
 
 // edgeKind is what a pane row presents to the border beside it.
 type edgeKind uint8
@@ -39,7 +41,7 @@ type panePart struct {
 	focused bool
 }
 
-// paneCol is panes stacked in one column, sharing the border where they meet.
+// paneCol is panes stacked in one column, each closed off in its own box.
 type paneCol []panePart
 
 // band is columns side by side. A layout is bands stacked top to bottom: the
@@ -54,179 +56,85 @@ func (c paneCol) width() int {
 	return c[0].w
 }
 
-// width is the whole frame's width, borders included.
-func (b band) width() int {
-	w := 1
-	for _, c := range b {
-		w += c.width() + 1
-	}
-	return w
-}
-
-// lines flattens a column into the rows the frame draws between its top and
-// bottom borders, with the shared border row where two panes meet.
-func (c paneCol) lines() []colLine {
-	var out []colLine
-	for i, p := range c {
-		if i > 0 {
-			out = append(out, colLine{
-				s:       joinFill(c[i-1], p),
-				edge:    edgeCross,
-				focused: c[i-1].focused || p.focused,
-			})
-		}
-		for j, r := range p.rows {
-			out = append(out, colLine{s: r, edge: p.edges[j], focused: p.focused})
-		}
-	}
-	return out
-}
-
-// colLine is one row of one column: its content and what the borders on
-// either side of it look like.
-type colLine struct {
-	s       string
-	edge    edgeKind
-	focused bool
-}
-
-// frame draws bands of pane columns as a single bordered grid.
+// frame draws bands of pane columns, each pane boxed and flush with the next.
 func frame(bands ...band) string {
 	var out []string
-	var prev band
 	for _, b := range bands {
-		if len(b) == 0 {
-			continue
-		}
-		out = append(out, borderRow(prev, b))
 		out = append(out, bandRows(b)...)
-		prev = b
 	}
-	if prev == nil {
-		return ""
-	}
-	out = append(out, borderRow(prev, nil))
 	return strings.Join(out, "\n")
 }
 
-// bandRows draws the rows between a band's top and bottom borders.
+// bandRows puts a band's columns side by side.
 func bandRows(b band) []string {
-	cols := make([][]colLine, len(b))
+	cols := make([][]string, len(b))
 	h := 0
 	for i, c := range b {
-		cols[i] = c.lines()
+		cols[i] = c.boxed()
 		if len(cols[i]) > h {
 			h = len(cols[i])
 		}
 	}
-	rows := make([]string, 0, h)
-	for y := 0; y < h; y++ {
-		var rb runBuilder
+	rows := make([]string, h)
+	for y := range rows {
+		var sb strings.Builder
 		for i, lines := range cols {
-			cur := lineAt(lines, y, b[i].width())
-			if i == 0 {
-				rb.add(edgeGlyph(edgeBody, cur.edge), cur.focused)
+			if y < len(lines) {
+				sb.WriteString(lines[y])
+				continue
 			}
-			rb.addRaw(cur.s)
-			next := colLine{edge: edgeBody}
-			if i+1 < len(cols) {
-				next = lineAt(cols[i+1], y, b[i+1].width())
-			}
-			rb.add(edgeGlyph(cur.edge, next.edge), cur.focused || next.focused)
+			// a column that came out short: blank, rather than shearing the
+			// columns beside it sideways
+			sb.WriteString(strings.Repeat(" ", b[i].width()+2))
 		}
-		rows = append(rows, rb.String())
+		rows[y] = sb.String()
 	}
 	return rows
 }
 
-// lineAt is a column's row, or blank filler when the columns of a band come
-// out uneven — a mismatch should not shear the whole frame sideways.
-func lineAt(lines []colLine, y, w int) colLine {
-	if y < len(lines) {
-		return lines[y]
+// boxed stacks a column's panes, each in its own box.
+func (c paneCol) boxed() []string {
+	var out []string
+	for _, p := range c {
+		out = append(out, p.boxed()...)
 	}
-	return colLine{s: strings.Repeat(" ", w), edge: edgeBody}
+	return out
 }
 
-// borderRow draws the horizontal border between two bands. Either side may be
-// nil, for the top and bottom of the frame.
-func borderRow(above, below band) string {
-	b := above
-	if b == nil {
-		b = below
+// boxed draws a pane as a closed box: its own four borders, with the pane's
+// internal dividers carried into the top and bottom ones as ┬ and ┴, and its
+// rules meeting the sides as ╞ ╡ or ├ ┤.
+func (p panePart) boxed() []string {
+	st := metaStyle
+	if p.focused {
+		st = okStyle
 	}
-	w := b.width()
-	up, upFocus := verticals(above, true, w)
-	down, downFocus := verticals(below, false, w)
-	var rb runBuilder
+	out := make([]string, 0, len(p.rows)+2)
+	out = append(out, st.Render(borderFill('╭', '╮', p.topJoin, false, p.w)))
+	for i, row := range p.rows {
+		left, right := sideGlyphs(p.edges[i])
+		out = append(out, st.Render(string(left))+row+st.Render(string(right)))
+	}
+	out = append(out, st.Render(borderFill('╰', '╯', p.botJoin, true, p.w)))
+	return out
+}
+
+// borderFill is a pane's top or bottom border: the corners with a horizontal
+// line between them, ticked where the pane's own dividers run into it.
+func borderFill(left, right rune, joins []int, up bool, w int) string {
+	tick := make([]bool, w)
+	for _, j := range joins {
+		if j >= 0 && j < w {
+			tick[j] = true
+		}
+	}
+	var sb strings.Builder
+	sb.WriteRune(left)
 	for x := 0; x < w; x++ {
-		rb.add(boxGlyph(up[x], down[x], x > 0, x < w-1), upFocus[x] || downFocus[x])
+		sb.WriteRune(boxGlyph(up && tick[x], !up && tick[x], true, true))
 	}
-	return rb.String()
-}
-
-// verticals marks every column of a border row that a vertical line meets
-// from the given end of a band: the column seams and the frame's own edges,
-// plus the dividers inside the panes there. The second result marks the
-// columns a focused pane is responsible for.
-func verticals(b band, bottom bool, w int) (lines, focus []bool) {
-	lines, focus = make([]bool, w), make([]bool, w)
-	if b == nil {
-		return lines, focus
-	}
-	mark := func(s []bool, x int) {
-		if x >= 0 && x < w {
-			s[x] = true
-		}
-	}
-	x := 0
-	for _, c := range b {
-		if len(c) == 0 {
-			continue
-		}
-		p := c[0]
-		joins := p.topJoin
-		if bottom {
-			p = c[len(c)-1]
-			joins = p.botJoin
-		}
-		mark(lines, x)
-		for _, j := range joins {
-			mark(lines, x+1+j)
-		}
-		if p.focused {
-			// a focused pane owns its span and the seams on both sides of it
-			for k := x; k <= x+p.w+1; k++ {
-				mark(focus, k)
-			}
-		}
-		x += p.w + 1
-	}
-	mark(lines, x)
-	return lines, focus
-}
-
-// joinFill is the border row shared by two stacked panes: a horizontal line
-// carrying the dividers that run up into the pane above and down into the one
-// below.
-func joinFill(above, below panePart) string {
-	up := make([]bool, above.w)
-	for _, j := range above.botJoin {
-		if j >= 0 && j < len(up) {
-			up[j] = true
-		}
-	}
-	down := make([]bool, above.w)
-	for _, j := range below.topJoin {
-		if j >= 0 && j < len(down) {
-			down[j] = true
-		}
-	}
-	var rb runBuilder
-	for x := 0; x < above.w; x++ {
-		rb.add(boxGlyph(up[x], down[x], true, true), above.focused || below.focused)
-	}
-	return rb.String()
+	sb.WriteRune(right)
+	return sb.String()
 }
 
 // boxGlyph is the box-drawing character for the lines meeting at a junction.
@@ -259,65 +167,17 @@ func boxGlyph(up, down, left, right bool) rune {
 	return ' '
 }
 
-// edgeGlyph is the vertical border between two pane rows — or between a row
-// and the outside, which counts as plain content.
-func edgeGlyph(l, r edgeKind) rune {
-	switch {
-	case l == edgeRule && r == edgeRule:
-		return '╪'
-	case l == edgeRule && r == edgeCross, l == edgeCross && r == edgeRule:
-		return '┼'
-	case l == edgeRule:
-		return '╡'
-	case r == edgeRule:
-		return '╞'
-	case l == edgeCross && r == edgeCross:
-		return '┼'
-	case l == edgeCross:
-		return '┤'
-	case r == edgeCross:
-		return '├'
+// sideGlyphs are the border characters beside a pane row: a plain edge for
+// content, and the ends of a rule for the pane's own rules, so a rule reads as
+// part of the box rather than stopping short of it.
+func sideGlyphs(k edgeKind) (left, right rune) {
+	switch k {
+	case edgeRule:
+		return '╞', '╡'
+	case edgeCross:
+		return '├', '┤'
 	}
-	return '│'
-}
-
-// runBuilder assembles a row, styling runs of border glyphs together rather
-// than one escape sequence per character.
-type runBuilder struct {
-	b       strings.Builder
-	run     []rune
-	focused bool
-}
-
-func (r *runBuilder) add(g rune, focused bool) {
-	if len(r.run) > 0 && focused != r.focused {
-		r.flush()
-	}
-	r.focused = focused
-	r.run = append(r.run, g)
-}
-
-// addRaw appends already-styled pane content.
-func (r *runBuilder) addRaw(s string) {
-	r.flush()
-	r.b.WriteString(s)
-}
-
-func (r *runBuilder) flush() {
-	if len(r.run) == 0 {
-		return
-	}
-	st := metaStyle
-	if r.focused {
-		st = okStyle
-	}
-	r.b.WriteString(st.Render(string(r.run)))
-	r.run = r.run[:0]
-}
-
-func (r *runBuilder) String() string {
-	r.flush()
-	return r.b.String()
+	return '│', '│'
 }
 
 // fitRows chops and pads a rendered block to exactly h rows of w columns. The
@@ -325,6 +185,9 @@ func (r *runBuilder) String() string {
 // pane that renders something too wide or too tall is cut to fit rather than
 // left to push its neighbours around.
 func fitRows(s string, w, h int) []string {
+	if h < 0 {
+		h = 0
+	}
 	lines := strings.Split(s, "\n")
 	out := make([]string, h)
 	for i := range out {
