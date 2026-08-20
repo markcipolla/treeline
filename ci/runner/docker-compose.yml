@@ -1,0 +1,32 @@
+# Deploy this as a Docker Compose application in Dokploy. It registers a
+# repo-scoped, ephemeral self-hosted runner: each container takes exactly one
+# job, then exits and is replaced, so no job inherits state from the last.
+#
+# Two things to set on the Dokploy side:
+#   1. the ACCESS_TOKEN environment variable (see README.md for the scopes)
+#   2. nothing else — the label below has to match the CI_RUNS_ON repository
+#      variable on GitHub, which is what points the workflow here.
+#
+# The Docker socket is deliberately NOT mounted: the workflow builds no
+# images, and mounting it would hand every job root on the host.
+services:
+  runner:
+    build: .
+    restart: always
+    environment:
+      RUNNER_SCOPE: repo
+      REPO_URL: https://github.com/markcipolla/treeline
+      # a short-lived registration token is minted from this on every start
+      ACCESS_TOKEN: ${ACCESS_TOKEN:?set ACCESS_TOKEN in Dokploy}
+      # must match the CI_RUNS_ON repository variable
+      LABELS: treeline-docker
+      RUNNER_NAME_PREFIX: treeline
+      # one job per container, then re-register fresh
+      EPHEMERAL: "true"
+      # persisted below, so actions/setup-go doesn't refetch Go every job
+      RUNNER_TOOL_CACHE: /opt/hostedtoolcache
+    volumes:
+      - tool-cache:/opt/hostedtoolcache
+
+volumes:
+  tool-cache:
