@@ -211,7 +211,7 @@ func New(cfg *config.Config, root string) Model {
 	// would cut the Selected row highlight off at the first "│". Dividers on
 	// unselected rows are tinted in renderTable instead.
 	styles.Cell = styles.Cell.BorderStyle(cellDivider).BorderLeft(true)
-	styles.Selected = styles.Selected.Foreground(accent).Bold(true)
+	styles.Selected = styles.Selected.Foreground(accent).Bold(true).Background(selBg)
 
 	t := table.New(
 		table.WithColumns([]table.Column{

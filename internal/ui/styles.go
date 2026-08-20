@@ -10,6 +10,10 @@ var (
 	btnBg   = lipgloss.AdaptiveColor{Light: "#e5e7eb", Dark: "#374151"}
 	btnFg   = lipgloss.AdaptiveColor{Light: "#111827", Dark: "#e5e7eb"}
 	onAcc   = lipgloss.AdaptiveColor{Light: "#ffffff", Dark: "#052e16"}
+	// the selected row's background. The accent foreground alone reads as
+	// "this row is green", not "this row is where you are", once the grid is
+	// a column among several — the band is what carries the cursor.
+	selBg = lipgloss.AdaptiveColor{Light: "#dcfce7", Dark: "#14532d"}
 
 	// Column dividers: every cell draws a left "│"; the header's bottom
 	// rule meets each divider with a "┼" intersection.
