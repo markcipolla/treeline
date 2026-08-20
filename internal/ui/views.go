@@ -78,11 +78,24 @@ func (m Model) viewHeader() string {
 		left += metaStyle.Render("  " + name)
 	}
 	right := ""
-	if who := m.viewer.Email; who != "" || m.viewer.Name != "" {
+	if who := m.viewer.Email; m.authed || who != "" || m.viewer.Name != "" {
 		if who == "" {
 			who = m.viewer.Name
 		}
-		right = metaStyle.Render("linear: " + who)
+		label := "linear"
+		if who != "" {
+			label = "linear: " + who
+		}
+		// fetch state: spinner while refreshing, green when good, red when
+		// the last refresh failed
+		dot := okStyle.Render("●")
+		switch {
+		case m.linearBusy:
+			dot = m.spinner.View()
+		case m.linearFail:
+			dot = errStyle.Render("●")
+		}
+		right = dot + " " + metaStyle.Render(label)
 	}
 	w := m.width - 4 // docStyle pads 2 each side
 	if w < 20 {
