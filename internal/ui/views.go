@@ -312,14 +312,19 @@ func (m Model) viewPanels() string {
 // workPart builds one of the work panes: its title, the ═ rule under it, and
 // a body cut to the box the layout gave it.
 func (m Model) workPart(b box, focused bool, title, body string) panePart {
-	w, h := b.w-2, b.h-2
+	w, h := b.w-2, b.h-2 // the box less its borders
 	ts, rs := paneTitleStyle, metaStyle
 	if focused {
 		ts, rs = paneTitleFocus, okStyle
 	}
-	rows := []string{
-		padTo(ts.Render(" "+title), w),
-		rs.Render(strings.Repeat("═", w)),
+	// a box too short for all of its chrome gives up the rule, then the
+	// title: whatever it keeps, it stays exactly as tall as the layout said
+	var rows []string
+	if h > 0 {
+		rows = append(rows, padTo(ts.Render(" "+title), w))
+	}
+	if h > 1 {
+		rows = append(rows, rs.Render(strings.Repeat("═", w)))
 	}
 	// the body sits a column off the border, like the title above it
 	for _, r := range fitRows(body, w-1, h-2) {

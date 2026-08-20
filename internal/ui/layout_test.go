@@ -112,9 +112,7 @@ func TestColumnLayoutPanesShareAHeight(t *testing.T) {
 		if issues != l.issues.h {
 			t.Errorf("%d cols: issues column is %d lines, want %d", width, issues, l.issues.h)
 		}
-		// stacked panes share the border where they meet, so the two boxes
-		// add up to one row more than the column they fill
-		right := l.git.h + l.term.h - 1
+		right := l.git.h + l.term.h
 		if l.mode == layFour {
 			right = l.git.h // its own column, full height
 		}
