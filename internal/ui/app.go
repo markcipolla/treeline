@@ -24,6 +24,7 @@ import (
 	"github.com/markcipolla/treeline/internal/github"
 	"github.com/markcipolla/treeline/internal/gitx"
 	"github.com/markcipolla/treeline/internal/linear"
+	"github.com/markcipolla/treeline/internal/tmux"
 )
 
 type screen int
@@ -359,6 +360,9 @@ func (m Model) loadWorktrees() tea.Cmd {
 func (m Model) JumpPath() string { return m.jumpPath }
 
 // Close shuts down any embedded sessions the panes started.
+// Close shuts the embedded panes down on the way out. Persisted (tmux-backed)
+// sessions are only detached, so the claude running in them keeps its context
+// and the next launch attaches straight back to it.
 func (m Model) Close() {
 	for _, s := range m.terms {
 		s.close()
@@ -1208,8 +1212,29 @@ func (m Model) doRemove(deleteBranch bool) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.removing = true
+	m.dropSessions(m.delTarget.Path) // nothing should be left running in a dir about to go
 	repo := m.repoFor(m.delTarget.Root)
 	return m, removeWorktreeCmd(*m.delTarget, deleteBranch, repo.cleanup, repo.name)
+}
+
+// dropSessions ends the claude and shell panes for a directory. Persisted
+// sessions are killed rather than detached: a worktree that is going away has
+// no work worth keeping alive in it.
+func (m Model) dropSessions(dir string) {
+	if m.cfg.Persist() {
+		// covers sessions this Model never opened — left running by an earlier
+		// treeline, and about to be orphaned in a deleted directory
+		tmux.KillDir(dir)
+	}
+	for _, set := range []map[string]*claudeSession{m.terms, m.shells} {
+		if s := set[dir]; s != nil {
+			if s.tmuxName != "" {
+				_ = tmux.Kill(s.tmuxName)
+			}
+			s.close()
+			delete(set, dir)
+		}
+	}
 }
 
 func (m Model) startAuth() (tea.Model, tea.Cmd) {
@@ -1536,7 +1561,7 @@ func (m *Model) ensureTerm() tea.Cmd {
 		return nil
 	}
 	cols, rows := m.termSize()
-	s, err := startTerm(dir, cols, rows)
+	s, err := startTerm(dir, cols, rows, m.cfg.Persist())
 	if err != nil {
 		m.err = err
 		return nil
@@ -1581,7 +1606,7 @@ func (m *Model) ensureShell() tea.Cmd {
 		return nil
 	}
 	cols, rows := m.shellSize()
-	s, err := startShell(dir, cols, rows)
+	s, err := startShell(dir, cols, rows, m.cfg.Persist())
 	if err != nil {
 		m.err = err
 		return nil
