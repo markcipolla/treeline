@@ -588,11 +588,15 @@ func (m Model) renderTable() string {
 			continue
 		}
 		if strings.TrimSpace(plain) == "" { // viewport filler below the rows
-			pad := totalW - 1
-			if pad < 0 {
-				pad = 0
+			var fb strings.Builder
+			for _, c := range m.table.Columns() {
+				if c.Width <= 0 {
+					continue
+				}
+				fb.WriteString("│" + strings.Repeat(" ", c.Width+2))
 			}
-			lines[i] = tintedDivider + strings.Repeat(" ", pad) + rightEdge
+			fb.WriteString("│")
+			lines[i] = metaStyle.Render(fb.String())
 			continue
 		}
 		// Cell dividers are rendered uncolored so the Selected row style
