@@ -377,6 +377,14 @@ func Log(dir string, n int) ([]Commit, error) {
 	return commits, nil
 }
 
+// CommitDiff returns the colored patch one commit introduced, with a
+// diffstat ahead of it. A merge is shown against its first parent, which is
+// the only reading of "what this commit changed" that makes sense.
+func CommitDiff(dir, rev string) (string, error) {
+	return run(dir, "show", "--color=always", "--format=", "--stat", "--patch",
+		"-m", "--first-parent", rev)
+}
+
 // Prune drops worktree registrations whose directories no longer exist.
 func Prune(root string) error {
 	_, err := run(root, "worktree", "prune")

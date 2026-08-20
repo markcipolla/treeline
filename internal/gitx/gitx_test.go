@@ -213,3 +213,40 @@ func TestRemoveLockedWorktree(t *testing.T) {
 		}
 	}
 }
+
+// The log's per-commit view needs the patch a single commit introduced, not
+// the whole branch: only the second commit's change may appear.
+func TestCommitDiff(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	root := tempRepo(t)
+	if err := os.WriteFile(filepath.Join(root, "second.txt"), []byte("second\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, root, "add", ".")
+	mustGit(t, root, "commit", "-m", "add second")
+
+	diff, err := CommitDiff(root, "HEAD")
+	if err != nil {
+		t.Fatalf("CommitDiff: %v", err)
+	}
+	// the patch is colored, so escape codes sit between the marker and the
+	// text: match the pieces, not "+second"
+	if !strings.Contains(diff, "second.txt") || !strings.Contains(diff, "@@") {
+		t.Errorf("HEAD's patch should show second.txt, got:\n%s", diff)
+	}
+	if strings.Contains(diff, "README.md") {
+		t.Errorf("HEAD's patch should not include the first commit, got:\n%s", diff)
+	}
+
+	// the root commit has no parent, and still has a patch
+	first := mustGit(t, root, "rev-list", "--max-parents=0", "HEAD")
+	diff, err = CommitDiff(root, first)
+	if err != nil {
+		t.Fatalf("CommitDiff(root commit): %v", err)
+	}
+	if !strings.Contains(diff, "README.md") {
+		t.Errorf("the root commit's patch should show README.md, got:\n%s", diff)
+	}
+}
