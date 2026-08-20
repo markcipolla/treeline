@@ -2,6 +2,8 @@ package ui
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -39,12 +41,36 @@ const (
 	scrAuthWait
 	scrGitHub
 	scrSearch
+	scrRepoPick
+	scrSettings
+	scrRepoEdit
 )
+
+// repoEntry is a repository treeline operates on.
+type repoEntry struct {
+	name    string
+	path    string
+	base    string // ref new branches start from
+	setup   string // sh -c hook after worktree creation
+	cleanup string // sh -c hook before worktree removal
+}
 
 type Model struct {
 	cfg  *config.Config
 	root string
-	base string // ref new branches start from
+	base string // primary repo's base ref
+
+	repos    []repoEntry // primary first, then registered repos
+	pendRepo repoEntry   // repo the create flow targets
+	repoIdx  int         // cursor in the repo picker
+
+	setupBusy bool // a setup script is running for the new worktree
+
+	// settings: repo registry editor
+	settingsIdx int
+	setName     string             // entry being edited; "" = adding
+	setInputs   [4]textinput.Model // name, path, setup, cleanup
+	setFocus    int
 
 	zones *zone.Manager
 
@@ -201,6 +227,13 @@ func New(cfg *config.Config, root string) Model {
 	}
 	authInputs[1].EchoMode = textinput.EchoPassword
 
+	setInputs := [4]textinput.Model{
+		newInput("repo name, e.g. labmaster"),
+		newInput("/path/to/primary/checkout"),
+		newInput("optional setup script"),
+		newInput("optional cleanup script"),
+	}
+
 	commitSubject := newInput("summary of the change…")
 	commitBody := textarea.New()
 	commitBody.Placeholder = "longer description (optional)…"
@@ -209,10 +242,14 @@ func New(cfg *config.Config, root string) Model {
 
 	ghOwner, ghRepo, ghOK := github.RepoFromRemote(root)
 
+	repos := buildRepos(cfg, root)
+
 	return Model{
 		cfg:           cfg,
 		root:          root,
-		base:          gitx.DefaultBase(root),
+		base:          repos[0].base,
+		repos:         repos,
+		pendRepo:      repos[0],
 		zones:         zone.New(),
 		table:         t,
 		ci:            map[string]github.Status{},
@@ -222,6 +259,7 @@ func New(cfg *config.Config, root string) Model {
 		ghOK:          ghOK,
 		filterInput:   filterInput,
 		searchInput:   searchInput,
+		setInputs:     setInputs,
 		commitSubject: commitSubject,
 		commitBody:    commitBody,
 		terms:         map[string]*claudeSession{},
@@ -240,6 +278,51 @@ func New(cfg *config.Config, root string) Model {
 	}
 }
 
+// buildRepos resolves the operating set: the repo treeline was launched in
+// first, then every other registered repo that still exists.
+func buildRepos(cfg *config.Config, root string) []repoEntry {
+	repos := []repoEntry{{name: filepath.Base(root), path: root, base: gitx.DefaultBase(root)}}
+	names := make([]string, 0, len(cfg.Repos))
+	for n := range cfg.Repos {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		rc := cfg.Repos[n]
+		if rc.Path == root {
+			repos[0].name, repos[0].setup, repos[0].cleanup = n, rc.Setup, rc.Cleanup
+			continue
+		}
+		if _, err := gitx.RepoRoot(rc.Path); err != nil {
+			continue
+		}
+		repos = append(repos, repoEntry{
+			name: n, path: rc.Path, base: gitx.DefaultBase(rc.Path),
+			setup: rc.Setup, cleanup: rc.Cleanup,
+		})
+	}
+	return repos
+}
+
+// repoFor finds the entry owning a primary checkout path.
+func (m Model) repoFor(root string) repoEntry {
+	for _, r := range m.repos {
+		if r.path == root {
+			return r
+		}
+	}
+	return repoEntry{name: filepath.Base(root), path: root, base: "HEAD"}
+}
+
+// loadWorktrees lists worktrees across every operating repo.
+func (m Model) loadWorktrees() tea.Cmd {
+	paths := make([]string, len(m.repos))
+	for i, r := range m.repos {
+		paths[i] = r.path
+	}
+	return loadWorktreesCmd(paths)
+}
+
 // JumpPath is the worktree path the user chose to jump into, if any.
 func (m Model) JumpPath() string { return m.jumpPath }
 
@@ -254,7 +337,7 @@ func (m Model) Close() {
 }
 
 func (m Model) Init() tea.Cmd {
-	cmds := []tea.Cmd{m.spinner.Tick, loadWorktreesCmd(m.root), issuesTickCmd()}
+	cmds := []tea.Cmd{m.spinner.Tick, m.loadWorktrees(), issuesTickCmd()}
 	if m.cfg.Linear.Token().Usable() {
 		cmds = append(cmds, loadIssuesCmd(m.cfg))
 	}
@@ -396,7 +479,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.commitSubject.SetValue("")
 		m.commitBody.SetValue("")
 		m.closeCommitForm()
-		return m, tea.Batch(m.reloadGit(), loadWorktreesCmd(m.root))
+		return m, tea.Batch(m.reloadGit(), m.loadWorktrees())
 
 	case genCommitMsg:
 		m.generating = false
@@ -434,7 +517,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Throttled, not debounced — claude's UI animates continuously.
 		if s.dir == m.gitFor && time.Since(m.gitFreshAt) > 3*time.Second {
 			m.gitFreshAt = time.Now()
-			cmds = append(cmds, m.reloadGit(), m.loadSelectedFileDiff(), loadWorktreesCmd(m.root))
+			cmds = append(cmds, m.reloadGit(), m.loadSelectedFileDiff(), m.loadWorktrees())
 		}
 		return m, tea.Batch(cmds...)
 
@@ -457,7 +540,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.createdBranch = msg.branchName
 		m.screen = scrCreated
 		m.loadingWT = true
-		return m, loadWorktreesCmd(m.root)
+		cmds := []tea.Cmd{m.loadWorktrees()}
+		if repo := m.repoFor(msg.root); repo.setup != "" {
+			m.setupBusy = true
+			cmds = append(cmds, runSetupCmd(repo.setup, msg.path,
+				scriptEnv(repo.name, msg.path, msg.branchName, m.pendKey)))
+		}
+		return m, tea.Batch(cmds...)
+
+	case scriptDoneMsg:
+		m.setupBusy = false
+		if msg.err != nil {
+			m.err = fmt.Errorf("setup script: %v — %s", msg.err, lastLine(msg.out))
+		}
+		return m, nil
 
 	case removedMsg:
 		m.removing = false
@@ -465,10 +561,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = msg.err
 			return m, nil
 		}
+		if msg.warn != "" {
+			m.err = errors.New(msg.warn)
+		}
 		m.delTarget = nil
 		m.screen = scrMain
 		m.loadingWT = true
-		return m, loadWorktreesCmd(m.root)
+		return m, m.loadWorktrees()
 
 	case authDoneMsg:
 		m.authCancel = nil
@@ -556,7 +655,8 @@ func (m Model) maybeLoadCI() tea.Cmd {
 	}
 	branches := make([]string, 0, len(m.wts))
 	for _, wt := range m.wts {
-		if wt.Branch != "" {
+		// the detected GitHub remote belongs to the primary repo only
+		if wt.Branch != "" && wt.Root == m.root {
 			branches = append(branches, wt.Branch)
 		}
 	}
@@ -615,6 +715,9 @@ func (m *Model) resize() {
 	}
 	m.filterInput.Width = inputW
 	m.searchInput.Width = inputW
+	for i := range m.setInputs {
+		m.setInputs[i].Width = inputW
+	}
 	m.branchInput.Width = inputW
 	m.manualInput.Width = inputW
 	for i := range m.authInputs {
@@ -713,7 +816,7 @@ func (m *Model) refreshRows() {
 			wt := linked[is.Identifier]
 			wtCell, gitCell, ciCell := "", "", ""
 			if wt != nil {
-				wtCell = relPath(m.root, wt.Path)
+				wtCell = m.wtLabel(wt)
 				gitCell = wtStatus(*wt)
 				ciCell = ciSymbol(m.ci[wt.Branch])
 			}
@@ -735,7 +838,7 @@ func (m *Model) refreshRows() {
 		if wt.IsPrimary {
 			name += " ●"
 		}
-		wtRows = append(wtRows, table.Row{"", name, "", relPath(m.root, wt.Path), wtStatus(*wt), ciSymbol(m.ci[wt.Branch])})
+		wtRows = append(wtRows, table.Row{"", name, "", m.wtLabel(wt), wtStatus(*wt), ciSymbol(m.ci[wt.Branch])})
 		wtRefs = append(wtRefs, rowRef{kind: rowWorktree, wt: wt})
 	}
 	if len(wtRows) > 0 {
@@ -827,9 +930,9 @@ func (m Model) openIssue(is linear.Issue) (tea.Model, tea.Cmd) {
 		}
 		return m.jumpTo(wt.Path)
 	}
-	if local, remote := m.branchForKey(is.Identifier); local != "" {
+	if root, local, remote := m.branchForKey(is.Identifier); local != "" {
 		m.screen = scrCreating
-		return m, createWorktreeCmd(m.root, local, "")
+		return m, createWorktreeCmd(root, local, "")
 	} else if remote != "" {
 		// strip the remote name; -b <name> from origin/<name> sets up tracking
 		name := remote
@@ -837,7 +940,7 @@ func (m Model) openIssue(is linear.Issue) (tea.Model, tea.Cmd) {
 			name = remote[i+1:]
 		}
 		m.screen = scrCreating
-		return m, createWorktreeCmd(m.root, name, remote)
+		return m, createWorktreeCmd(root, name, remote)
 	}
 	m.startCreateFlow(is)
 	return m, nil
@@ -852,10 +955,46 @@ func (m *Model) startCreateFlow(is linear.Issue) {
 
 func (m Model) confirmType() (tea.Model, tea.Cmd) {
 	m.branchInput.SetValue(m.branchPreview(m.cfg.BranchTypes[m.typeIdx]))
+	return m.pickRepoThenEdit()
+}
+
+// pickRepoThenEdit inserts the repo picker when several repos are
+// registered, otherwise goes straight to the branch editor.
+func (m Model) pickRepoThenEdit() (tea.Model, tea.Cmd) {
+	m.pendRepo = m.repos[0]
+	if len(m.repos) > 1 {
+		m.repoIdx = 0
+		m.screen = scrRepoPick
+		return m, nil
+	}
+	return m.toEditBranch()
+}
+
+func (m Model) toEditBranch() (tea.Model, tea.Cmd) {
 	m.branchInput.CursorEnd()
 	m.branchInput.Focus()
 	m.screen = scrEditBranch
 	return m, textinput.Blink
+}
+
+func (m Model) keyRepoPick(k tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch k.String() {
+	case "esc":
+		m.screen = scrMain
+		return m, nil
+	case "up", "k":
+		if m.repoIdx > 0 {
+			m.repoIdx--
+		}
+	case "down", "j":
+		if m.repoIdx < len(m.repos)-1 {
+			m.repoIdx++
+		}
+	case "enter":
+		m.pendRepo = m.repos[m.repoIdx]
+		return m.toEditBranch()
+	}
+	return m, nil
 }
 
 func (m Model) submitEdit() (tea.Model, tea.Cmd) {
@@ -865,7 +1004,7 @@ func (m Model) submitEdit() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.screen = scrCreating
-	return m, createWorktreeCmd(m.root, name, m.base)
+	return m, createWorktreeCmd(m.pendRepo.path, name, m.pendRepo.base)
 }
 
 func (m Model) backFromEdit() (tea.Model, tea.Cmd) {
@@ -900,10 +1039,7 @@ func (m Model) submitManual() (tea.Model, tea.Cmd) {
 	m.pendKey = ""
 	m.pendTitle = ""
 	m.branchInput.SetValue(v)
-	m.branchInput.CursorEnd()
-	m.branchInput.Focus()
-	m.screen = scrEditBranch
-	return m, textinput.Blink
+	return m.pickRepoThenEdit()
 }
 
 // ---- workspace-wide issue search ----
@@ -994,7 +1130,8 @@ func (m Model) doRemove(deleteBranch bool) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.removing = true
-	return m, removeWorktreeCmd(m.root, *m.delTarget, deleteBranch)
+	repo := m.repoFor(m.delTarget.Root)
+	return m, removeWorktreeCmd(*m.delTarget, deleteBranch, repo.cleanup, repo.name)
 }
 
 func (m Model) startAuth() (tea.Model, tea.Cmd) {
@@ -1130,6 +1267,12 @@ func (m Model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.keyAuth(k)
 	case scrSearch:
 		return m.keySearch(k)
+	case scrRepoPick:
+		return m.keyRepoPick(k)
+	case scrSettings:
+		return m.keySettings(k)
+	case scrRepoEdit:
+		return m.keyRepoEdit(k)
 	case scrAuthWait:
 		if k.String() == "esc" {
 			if m.authCancel != nil {
@@ -1217,7 +1360,7 @@ func (m Model) keyMain(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "r":
 		m.loadingWT = true
-		cmds := []tea.Cmd{loadWorktreesCmd(m.root)}
+		cmds := []tea.Cmd{m.loadWorktrees()}
 		if m.authed {
 			m.loadingIssues = true
 			m.linearBusy = true
@@ -1239,6 +1382,9 @@ func (m Model) keyMain(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "s":
 		return m.openSearch()
+
+	case ",":
+		return m.openSettings()
 
 	case "v":
 		return m.openDetail()
@@ -1461,7 +1607,11 @@ func (m *Model) syncPanes() tea.Cmd {
 		m.setDiffContent()
 		if path != "" {
 			m.loadingDiff = true
-			cmds = append(cmds, loadDiffCmd(path, m.base))
+			var root string
+			if ref := m.selectedRef(); ref.wt != nil {
+				root = ref.wt.Root
+			}
+			cmds = append(cmds, loadDiffCmd(path, m.repoFor(root).base))
 		}
 	}
 
@@ -1821,6 +1971,16 @@ func (m Model) handleClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		case m.clicked(msg, "btn:back"):
 			m.detailIssue = nil
 			m.screen = scrMain
+		}
+		return m, nil
+
+	case scrRepoPick:
+		for i := range m.repos {
+			if m.clicked(msg, repoZoneID(i)) {
+				m.repoIdx = i
+				m.pendRepo = m.repos[i]
+				return m.toEditBranch()
+			}
 		}
 		return m, nil
 

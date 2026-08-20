@@ -120,5 +120,29 @@ New branches start from `origin`'s default branch when it's known, otherwise
 }
 ```
 
+### Repos
+
+Treeline works across multiple repositories: register each one (in-app via
+`,` settings, or in the config) and every repo's worktrees appear in the
+list; creating a worktree asks which repo it belongs to. Each repo can have
+lifecycle hooks, run with `sh -c` inside the worktree with
+`TREELINE_REPO`, `TREELINE_WORKTREE`, `TREELINE_BRANCH`, and
+`TREELINE_ISSUE` in the environment:
+
+```json
+"repos": {
+  "labmaster": {
+    "path": "/Users/you/dev/labmaster",
+    "setup": "./scripts/worktree-setup.sh",
+    "cleanup": "./scripts/worktree-teardown.sh"
+  },
+  "conductor": { "path": "/Users/you/dev/conductor" }
+}
+```
+
+`setup` runs after a worktree is created (assign a port, create a
+database); `cleanup` runs before one is removed (drop the database). The
+config lives at `~/.config/treeline/config.json`.
+
 `branch_types` controls the type-picker options; `slug_max_len` caps the
 slug generated from issue titles.

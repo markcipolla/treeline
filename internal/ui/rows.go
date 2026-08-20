@@ -65,21 +65,32 @@ func (m Model) worktreeForKey(key string) *gitx.Worktree {
 	return nil
 }
 
-// branchForKey finds an existing branch already carrying the issue key —
-// local first, then remote-tracking (e.g. origin/feature/LAB-1/slug).
-func (m Model) branchForKey(key string) (local, remote string) {
-	locals, remotes := gitx.Branches(m.root)
-	for _, b := range locals {
-		if issueKeyFromBranch(b) == key {
-			return b, ""
+// branchForKey finds an existing branch already carrying the issue key in
+// any operating repo — local first, then remote-tracking.
+func (m Model) branchForKey(key string) (root, local, remote string) {
+	for _, r := range m.repos {
+		locals, remotes := gitx.Branches(r.path)
+		for _, b := range locals {
+			if issueKeyFromBranch(b) == key {
+				return r.path, b, ""
+			}
+		}
+		for _, b := range remotes {
+			if issueKeyFromBranch(b) == key {
+				return r.path, "", b
+			}
 		}
 	}
-	for _, b := range remotes {
-		if issueKeyFromBranch(b) == key {
-			return "", b
-		}
+	return "", "", ""
+}
+
+// wtLabel names a worktree's location: repo-relative for the primary repo,
+// repo-prefixed for the others.
+func (m Model) wtLabel(wt *gitx.Worktree) string {
+	if wt.Root == m.root || wt.Root == "" {
+		return relPath(m.root, wt.Path)
 	}
-	return "", ""
+	return m.repoFor(wt.Root).name + ":" + relPath(wt.Root, wt.Path)
 }
 
 // paneLabel names a working directory for pane titles: the linked Linear

@@ -19,8 +19,31 @@ type Config struct {
 	BranchTypes []string     `json:"branch_types"`
 	SlugMaxLen  int          `json:"slug_max_len"`
 	// Repos remembers primary checkouts by name (e.g. "labmaster"), so
-	// treeline can be launched from anywhere and offer a picker.
-	Repos map[string]string `json:"repos,omitempty"`
+	// treeline can be launched anywhere, list every repo's worktrees, and
+	// offer a repo picker when creating one.
+	Repos map[string]RepoConfig `json:"repos,omitempty"`
+}
+
+// RepoConfig is a registered repository: its primary checkout plus optional
+// lifecycle hooks, each run with `sh -c` inside the worktree. Setup runs
+// after a worktree is created (e.g. assign a port, create a database);
+// Cleanup runs before one is removed (e.g. drop the database).
+type RepoConfig struct {
+	Path    string `json:"path"`
+	Setup   string `json:"setup,omitempty"`
+	Cleanup string `json:"cleanup,omitempty"`
+}
+
+// UnmarshalJSON accepts both the current object form and the legacy plain
+// path string.
+func (r *RepoConfig) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err == nil {
+		r.Path = s
+		return nil
+	}
+	type plain RepoConfig
+	return json.Unmarshal(b, (*plain)(r))
 }
 
 // GitHubConfig is only needed when the gh CLI isn't installed: a personal
@@ -69,7 +92,21 @@ func defaults() *Config {
 	}
 }
 
+// path is ~/.config/treeline/config.json (XDG_CONFIG_HOME respected).
 func path() (string, error) {
+	if base := os.Getenv("XDG_CONFIG_HOME"); base != "" {
+		return filepath.Join(base, "treeline", "config.json"), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".config", "treeline", "config.json"), nil
+}
+
+// legacyPath is the pre-0.3 location (os.UserConfigDir — on macOS that is
+// ~/Library/Application Support); Load migrates it forward once.
+func legacyPath() (string, error) {
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		return "", err
@@ -94,7 +131,18 @@ func Load() (*Config, error) {
 	}
 	data, err := os.ReadFile(p)
 	if errors.Is(err, os.ErrNotExist) {
-		return cfg, nil
+		// migrate the pre-0.3 location forward once
+		if lp, lerr := legacyPath(); lerr == nil && lp != p {
+			if ldata, lerr := os.ReadFile(lp); lerr == nil {
+				data, err = ldata, nil
+				if uerr := json.Unmarshal(data, cfg); uerr == nil {
+					_ = cfg.Save() // write to the new home
+				}
+			}
+		}
+		if data == nil {
+			return cfg, nil
+		}
 	}
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", p, err)
