@@ -229,9 +229,15 @@ func (m Model) viewPanels() string {
 	rw := w - lw
 
 	dir := m.claudeDir()
-	claudeTitle := "claude — " + m.paneLabel(dir)
+	noWT := dir == "" // nothing checked out: the work panes stay empty
+	claudeTitle := "claude"
+	if !noWT {
+		claudeTitle += " — " + m.paneLabel(dir)
+	}
 	var claudeBody string
 	switch s := m.terms[dir]; {
+	case noWT:
+		claudeBody = dimStyle.Render(m.noWorktreeHint())
 	case s == nil:
 		claudeBody = dimStyle.Render("press enter on a card (or tab here) to launch claude in its worktree\n\nctrl+q cycles panes from anywhere")
 	case s.exited.Load():
@@ -246,7 +252,7 @@ func (m Model) viewPanels() string {
 			claudeTitle += fmt.Sprintf(" · ↑%d — wheel down for live", n)
 		}
 	}
-	if m.pane == paneClaude {
+	if m.pane == paneClaude && !noWT {
 		if s := m.terms[dir]; s != nil && s.exited.Load() {
 			claudeTitle += " — enter restarts"
 		} else {
@@ -262,13 +268,26 @@ func (m Model) viewPanels() string {
 	gitH, termH := m.rightSplit()
 	gitTitle, gitBody := m.gitPaneContent(rw-4, gitH-4)
 	if wt := m.selectedRef().wt; wt != nil && wt.Prunable {
-		gitBody = warnStyle.Render("worktree directory is gone — press d to clean it up")
+		gitTitle, gitBody = "git", warnStyle.Render("worktree directory is gone — press d to clean it up")
+	} else if noWT {
+		gitTitle, gitBody = "git", dimStyle.Render(m.noWorktreeHint())
+	}
+	if a, b, ok := m.gitSel.bounds(); ok {
+		gitBody = strings.Join(highlightSel(strings.Split(gitBody, "\n"), a, b), "\n")
+	}
+	if m.copiedFrom == paneDiff && time.Now().Before(m.copiedUntil) {
+		gitTitle += okStyle.Render(" · copied ✓")
 	}
 	gitPane := m.zones.Mark("pane:diff", pane(rw, gitH, m.pane == paneDiff, gitTitle, gitBody))
 
-	termTitle := "shell — " + m.paneLabel(dir)
+	termTitle := "shell"
+	if !noWT {
+		termTitle += " — " + m.paneLabel(dir)
+	}
 	var termBody string
 	switch sh := m.shells[dir]; {
+	case noWT:
+		termBody = dimStyle.Render(m.noWorktreeHint())
 	case sh == nil:
 		termBody = dimStyle.Render("tab here (or click) to open a shell in this worktree")
 	case sh.exited.Load():
@@ -289,6 +308,19 @@ func (m Model) viewPanels() string {
 	return lipgloss.JoinVertical(lipgloss.Left,
 		top,
 		lipgloss.JoinHorizontal(lipgloss.Top, center, right))
+}
+
+// noWorktreeHint explains why the claude, git and shell panes are empty: the
+// selected row has no worktree for them to work in.
+func (m Model) noWorktreeHint() string {
+	ref := m.selectedRef()
+	switch {
+	case ref.wt != nil && ref.wt.Prunable:
+		return "worktree directory is gone — press d to clean it up"
+	case ref.issue != nil:
+		return "no worktree for " + ref.issue.Identifier + " yet — press enter on the card to create one"
+	}
+	return "select a card or worktree to work in"
 }
 
 // collapsedIssueLine is the one-line summary shown in the issues strip when

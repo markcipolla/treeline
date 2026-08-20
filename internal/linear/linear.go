@@ -49,7 +49,8 @@ type issueNode struct {
 		Type string `json:"type"`
 	} `json:"state"`
 	Assignee *struct {
-		Name string `json:"name"`
+		Name        string `json:"name"`
+		DisplayName string `json:"displayName"`
 	} `json:"assignee"`
 	Labels struct {
 		Nodes []struct {
@@ -65,7 +66,7 @@ func (n issueNode) toIssue() Issue {
 	}
 	assignee := ""
 	if n.Assignee != nil {
-		assignee = n.Assignee.Name
+		assignee = assigneeLabel(n.Assignee.Name, n.Assignee.DisplayName)
 	}
 	return Issue{
 		ID:          n.ID,
@@ -79,6 +80,23 @@ func (n issueNode) toIssue() Issue {
 		Assignee:    assignee,
 		Labels:      labels,
 	}
+}
+
+// assigneeLabel picks the shortest human label for an assignee. Linear leaves
+// name set to the member's email address until they set a real one, which is
+// both long and noisy in a table column; displayName is always the short
+// handle ("mark.cipolla"), so it stands in for an unset name.
+func assigneeLabel(name, displayName string) string {
+	if name != "" && !strings.Contains(name, "@") {
+		return name
+	}
+	if displayName != "" {
+		return displayName
+	}
+	if i := strings.Index(name, "@"); i > 0 {
+		return name[:i] // no displayName either: drop the domain at least
+	}
+	return name
 }
 
 func toIssues(nodes []issueNode) []Issue {
@@ -138,7 +156,7 @@ const assignedIssuesQuery = `query {
       nodes {
         id identifier title description priority url
         state { name type }
-        assignee { name }
+        assignee { name displayName }
         labels { nodes { name } }
       }
     }
@@ -202,7 +220,7 @@ func ParseSearchQuery(raw string) SearchQuery {
 const issueSelection = `
       id identifier title description priority url
       state { name type }
-      assignee { name }
+      assignee { name displayName }
       labels { nodes { name } }`
 
 const searchIssuesQuery = `query Search($term: String!) {
@@ -263,7 +281,7 @@ const issueQuery = `query Issue($id: String!) {
   issue(id: $id) {
     id identifier title description priority url
     state { name type }
-    assignee { name }
+    assignee { name displayName }
     labels { nodes { name } }
   }
 }`

@@ -36,7 +36,10 @@ func run(dir string, args ...string) (string, error) {
 		if msg == "" {
 			msg = err.Error()
 		}
-		return "", fmt.Errorf("git %s: %s", args[0], msg)
+		// stdout comes back with the error: some commands exit non-zero as a
+		// matter of course (diff --no-index reports "the files differ" that
+		// way), and their caller decides whether that is a failure.
+		return strings.TrimSpace(out.String()), fmt.Errorf("git %s: %s", args[0], msg)
 	}
 	return strings.TrimSpace(out.String()), nil
 }

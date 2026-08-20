@@ -144,20 +144,26 @@ type Model struct {
 	gitFor      string    // directory the pane operates on
 	gitFreshAt  time.Time // last auto-refresh; throttles claude-driven reloads
 	copiedUntil time.Time // "copied" flash after a drag selection
+	copiedFrom  int       // and the pane it came from
 	gitMode     int
 	gitUnstaged []gitx.FileStatus
 	gitStaged   []gitx.FileStatus
 	gitCol      int // active column: 0 unstaged, 1 staged
 	gitSelU     int // per-column selections
 	gitSelS     int
+	gitScroll   [2]int // per-column view offsets, scrolled by the wheel
 	gitDiff     string // colored preview for the selected file
-	hunkPath    string
-	hunkStaged  bool
-	hunkHeader  string
-	hunks       []string
-	hunkSel     int
-	commits     []gitx.Commit
-	commitSel   int
+	// gitDiffScroll scrolls that preview on its own, so the wheel over the
+	// diff doesn't drag the file lists around with it
+	gitDiffScroll int
+	gitSel        textSel // mouse text selection over the pane's rendered text
+	hunkPath      string
+	hunkStaged    bool
+	hunkHeader    string
+	hunks         []string
+	hunkSel       int
+	commits       []gitx.Commit
+	commitSel     int
 
 	// commit form
 	commitSubject textinput.Model
@@ -202,6 +208,7 @@ func New(cfg *config.Config, root string) Model {
 			{Title: "KEY", Width: 10},
 			{Title: "TITLE", Width: 40},
 			{Title: "PRIORITY", Width: 8},
+			{Title: "ASSIGNEE", Width: 14},
 			{Title: "WORKTREE", Width: 24},
 			{Title: "GIT", Width: 10},
 			{Title: "CI", Width: 3},
@@ -404,10 +411,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.wts = msg.wts
 		m.refreshRows()
 		var focus tea.Cmd
-		if m.pendSelect != "" && m.selectWorktree(m.pendSelect) {
+		if pend := m.pendSelect; pend != "" {
 			m.pendSelect = ""
-			var mm tea.Model
-			mm, focus = m.focusPane(paneClaude)
+			if m.selectWorktree(pend) {
+				var mm tea.Model
+				mm, focus = m.focusPane(paneClaude)
+				m = mm.(Model)
+			}
+		}
+		if !m.paneEnabled(m.pane) {
+			mm, _ := m.focusPane(paneIssues)
 			m = mm.(Model)
 		}
 		return m, tea.Batch(m.maybeLoadCI(), m.syncPanes(), m.syncExtras(false), focus)
@@ -437,7 +450,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewer = msg.viewer
 		m.issues = msg.issues
 		m.refreshRows()
-		return m, m.syncExtras(true) // also re-fetch review cards so they stay fresh
+		// the rows just moved under the cursor; the panes follow the selection
+		return m, tea.Batch(m.syncExtras(true), m.syncPanes())
 
 	case ciMsg:
 		m.loadingCI = false
@@ -445,7 +459,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ci[b] = s
 		}
 		m.refreshRows()
-		return m, nil
+		return m, m.syncPanes()
 
 	case searchDebounceMsg:
 		if msg.seq != m.searchSeq || m.screen != scrSearch {
@@ -510,10 +524,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.dir != m.gitFor || !ok || fs.Path != msg.path || staged != msg.staged {
 			return m, nil // selection moved on
 		}
+		diff := msg.diff
 		if msg.err != nil {
-			m.gitDiff = errStyle.Render("✗ " + msg.err.Error())
-		} else {
-			m.gitDiff = msg.diff
+			diff = errStyle.Render("✗ " + msg.err.Error())
+		}
+		if diff != m.gitDiff {
+			m.gitDiff, m.gitDiffScroll = diff, 0
 		}
 		return m, nil
 
@@ -587,7 +603,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.refreshRows()
-		return m, nil
+		return m, m.syncPanes()
 
 	case issueFetchedMsg:
 		m.fetchingIssue = false
@@ -794,27 +810,40 @@ func (m *Model) resize() {
 }
 
 // setTableLayout sizes the issue table's columns for the given width.
+// ASSIGNEE is the first column to go when the terminal is narrow: a zero
+// width hides a column outright, which the table widget and the frame
+// drawing in renderTable both honour.
 func (m *Model) setTableLayout(w, h int) {
 	pad := 3 // each cell: 1-char divider + 1 padding on both sides
 	w--      // renderTable appends a right edge to every row
 	keyW, priW, gitW, ciW := 10, 8, 10, 3
+	const titleMin, wtMin, asgFull = 12, 8, 14
+
+	// ASSIGNEE only earns a column once TITLE and WORKTREE can still hold
+	// their floors alongside it
+	asgW, cols := asgFull, 7
+	if w < keyW+priW+gitW+ciW+asgFull+titleMin+wtMin+7*pad {
+		asgW, cols = 0, 6
+	}
+
 	wtW := w * 22 / 100
 	if wtW < 14 {
 		wtW = 14
 	}
-	titleW := w - keyW - priW - gitW - ciW - wtW - 6*pad
-	if titleW < 12 {
+	titleW := w - keyW - priW - asgW - gitW - ciW - wtW - cols*pad
+	if titleW < titleMin {
 		// give TITLE its floor back out of WORKTREE so the frame still fits
-		wtW -= 12 - titleW
-		titleW = 12
-		if wtW < 8 {
-			wtW = 8
+		wtW -= titleMin - titleW
+		titleW = titleMin
+		if wtW < wtMin {
+			wtW = wtMin
 		}
 	}
 	m.table.SetColumns([]table.Column{
 		{Title: "KEY", Width: keyW},
 		{Title: "TITLE", Width: titleW},
 		{Title: "PRIORITY", Width: priW},
+		{Title: "ASSIGNEE", Width: asgW},
 		{Title: "WORKTREE", Width: wtW},
 		{Title: "GIT", Width: gitW},
 		{Title: "CI", Width: ciW},
@@ -898,7 +927,7 @@ func (m *Model) refreshRows() {
 	var refs []rowRef
 	header := func(title string) {
 		// plain text: styled cells break the table's width-based truncation
-		rows = append(rows, table.Row{"", "▸ " + title, "", "", "", ""})
+		rows = append(rows, table.Row{"", "▸ " + title, "", "", "", "", ""})
 		refs = append(refs, rowRef{kind: rowHeader})
 	}
 
@@ -912,7 +941,7 @@ func (m *Model) refreshRows() {
 				gitCell = wtStatus(*wt)
 				ciCell = ciSymbol(m.ci[wt.Branch])
 			}
-			rows = append(rows, table.Row{is.Identifier, is.Title, linear.PriorityName(is.Priority), wtCell, gitCell, ciCell})
+			rows = append(rows, table.Row{is.Identifier, is.Title, linear.PriorityName(is.Priority), is.Assignee, wtCell, gitCell, ciCell})
 			refs = append(refs, rowRef{kind: rowIssue, issue: is, wt: wt})
 		}
 	}
@@ -930,7 +959,7 @@ func (m *Model) refreshRows() {
 		if wt.IsPrimary {
 			name += " ●"
 		}
-		wtRows = append(wtRows, table.Row{"", name, "", m.wtLabel(wt), wtStatus(*wt), ciSymbol(m.ci[wt.Branch])})
+		wtRows = append(wtRows, table.Row{"", name, "", "", m.wtLabel(wt), wtStatus(*wt), ciSymbol(m.ci[wt.Branch])})
 		wtRefs = append(wtRefs, rowRef{kind: rowWorktree, wt: wt})
 	}
 	if len(wtRows) > 0 {
@@ -940,8 +969,19 @@ func (m *Model) refreshRows() {
 	}
 
 	cur := m.table.Cursor()
+	want := m.selectedRef().keys()
 	m.refs = refs
 	m.table.SetRows(rows)
+	if len(want) > 0 {
+		// the rows moved (cards loaded, a filter changed): follow the
+		// selection rather than letting the index point at a new row
+		for i, ref := range refs {
+			if sameRow(ref.keys(), want) {
+				cur = i
+				break
+			}
+		}
+	}
 	if cur >= len(rows) {
 		cur = len(rows) - 1
 	}
@@ -1217,9 +1257,9 @@ func (m Model) openWorktree(path string) (tea.Model, tea.Cmd) {
 	}
 	m.screen = scrMain
 	if !m.selectWorktree(path) {
-		// freshly created: loadWorktrees is still in flight, so leave the
-		// cursor alone rather than pointing the panes at the wrong worktree
-		// (claudeDir falls back to the repo root) and retry on worktreesMsg.
+		// freshly created and loadWorktrees is still in flight, so there is no
+		// row to move the cursor to. Park the path: claudeDir and syncPanes
+		// defer to it, and worktreesMsg selects it once the list arrives.
 		m.pendSelect = path
 		return m, nil
 	}
@@ -1445,9 +1485,9 @@ func (m Model) keyMain(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		switch k.String() {
 		case "tab", "ctrl+q":
-			return m.focusPane((m.pane + 1) % paneCount)
+			return m.focusPane(m.cyclePane(1))
 		case "shift+tab":
-			return m.focusPane((m.pane + paneCount - 1) % paneCount)
+			return m.focusPane(m.cyclePane(-1))
 		}
 		if m.pane == paneDiff {
 			return m.keyGit(k)
@@ -1457,7 +1497,7 @@ func (m Model) keyMain(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch k.String() {
 		case "esc":
 			m.clearFilter()
-			return m, nil
+			return m, m.syncPanes()
 		case "enter":
 			m.filterInput.Blur()
 			m.filtering = false
@@ -1468,7 +1508,7 @@ func (m Model) keyMain(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			m.filterInput, cmd = m.filterInput.Update(k)
 			m.refreshRows()
-			return m, cmd
+			return m, tea.Batch(cmd, m.syncPanes())
 		}
 	}
 
@@ -1479,6 +1519,7 @@ func (m Model) keyMain(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		if m.filterInput.Value() != "" {
 			m.clearFilter()
+			return m, m.syncPanes()
 		}
 		return m, nil
 
@@ -1563,7 +1604,27 @@ const (
 // threePane reports whether the terminal is wide enough for the panel layout.
 func (m Model) threePane() bool { return m.width >= 110 }
 
+// paneEnabled reports whether a pane can hold focus: claude, git and the shell
+// all need a worktree to work in, so with none checked out the issues list is
+// the only pane there is.
+func (m Model) paneEnabled(p int) bool { return p == paneIssues || m.claudeDir() != "" }
+
+// cyclePane is the pane delta steps from the current one, skipping any that
+// have no worktree behind them.
+func (m Model) cyclePane(delta int) int {
+	for i := 1; i <= paneCount; i++ {
+		p := ((m.pane+i*delta)%paneCount + paneCount) % paneCount
+		if m.paneEnabled(p) {
+			return p
+		}
+	}
+	return paneIssues
+}
+
 func (m Model) focusPane(p int) (tea.Model, tea.Cmd) {
+	if !m.paneEnabled(p) {
+		p = paneIssues // nothing checked out to focus on
+	}
 	m.pane = p
 	m.resize() // the issues strip grows/shrinks with focus
 	if p == paneClaude {
@@ -1583,7 +1644,7 @@ func (m Model) focusPane(p int) (tea.Model, tea.Cmd) {
 // worktree, sized to the pane.
 func (m *Model) ensureTerm() tea.Cmd {
 	dir := m.claudeDir()
-	if m.terms[dir] != nil {
+	if dir == "" || m.terms[dir] != nil {
 		return nil
 	}
 	cols, rows := m.termSize()
@@ -1601,6 +1662,15 @@ func (m Model) termSize() (cols, rows int) {
 	w := m.width - docStyle.GetHorizontalFrameSize()
 	_, bottomH := m.panelHeights()
 	return w/2 - 2, bottomH - 4
+}
+
+// gitPaneSize is the git pane's inner grid: the right column's width and its
+// share of the bottom panel. It mirrors viewPanels' arithmetic so the mouse
+// handler measures the same box the renderer drew.
+func (m Model) gitPaneSize() (w, h int) {
+	full := m.width - docStyle.GetHorizontalFrameSize()
+	gitH, _ := m.rightSplit()
+	return full - full/2 - 4, gitH - 4
 }
 
 // rightSplit divides the right column between the git pane and the shell.
@@ -1628,7 +1698,7 @@ func (m Model) shellSize() (cols, rows int) {
 // ensureShell starts (or reattaches) the shell for the selected worktree.
 func (m *Model) ensureShell() tea.Cmd {
 	dir := m.claudeDir()
-	if m.shells[dir] != nil {
+	if dir == "" || m.shells[dir] != nil {
 		return nil
 	}
 	cols, rows := m.shellSize()
@@ -1652,9 +1722,12 @@ func (m Model) paneSession(pane int) *claudeSession {
 
 func (m Model) keyShell(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if k.String() == "ctrl+q" {
-		return m.focusPane((m.pane + 1) % paneCount)
+		return m.focusPane(m.cyclePane(1))
 	}
 	dir := m.claudeDir()
+	if dir == "" {
+		return m.focusPane(paneIssues) // the worktree went away under us
+	}
 	s := m.shells[dir]
 	if s == nil {
 		return m, m.ensureShell()
@@ -1701,12 +1774,17 @@ func (m Model) panelHeights() (topH, bottomH int) {
 }
 
 // claudeDir is the directory the claude pane talks in: the selected issue's
-// worktree, or the repo root when nothing is checked out.
+// worktree, or "" when the selection has no usable worktree. It deliberately
+// does not fall back to the repo root — with no worktree checked out the
+// claude, git and shell panes have nothing to show and stay empty.
 func (m Model) claudeDir() string {
+	if m.pendSelect != "" {
+		return m.pendSelect
+	}
 	if ref := m.selectedRef(); ref.wt != nil && !ref.wt.Prunable {
 		return ref.wt.Path
 	}
-	return m.root
+	return ""
 }
 
 func (m *Model) setDiffContent() {
@@ -1721,7 +1799,9 @@ func (m *Model) setDiffContent() {
 
 // syncPanes points the git and chat panes at the selected worktree.
 func (m *Model) syncPanes() tea.Cmd {
-	if !m.threePane() {
+	if !m.threePane() || m.pendSelect != "" {
+		// nothing to point the panes at yet: syncing now would load the diff
+		// and git status of whichever row the cursor is parked on
 		return nil
 	}
 	var cmds []tea.Cmd
@@ -1747,19 +1827,27 @@ func (m *Model) syncPanes() tea.Cmd {
 	if dir := m.claudeDir(); dir != m.gitFor {
 		m.gitFor = dir
 		m.gitMode = gitModeFiles
+		m.gitScroll = [2]int{}
+		m.gitDiffScroll = 0
+		m.gitSel.clear()
 		m.gitUnstaged, m.gitStaged, m.gitDiff = nil, nil, ""
 		m.gitCol, m.gitSelU, m.gitSelS = 0, 0, 0
 		m.hunks, m.commits, m.commitSel = nil, nil, 0
-		cmds = append(cmds, loadGitStatusCmd(dir), loadGitLogCmd(dir))
+		if dir != "" {
+			cmds = append(cmds, loadGitStatusCmd(dir), loadGitLogCmd(dir))
+		}
 	}
 	return tea.Batch(cmds...)
 }
 
 func (m Model) keyClaude(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if k.String() == "ctrl+q" {
-		return m.focusPane((m.pane + 1) % paneCount)
+		return m.focusPane(m.cyclePane(1))
 	}
 	dir := m.claudeDir()
+	if dir == "" {
+		return m.focusPane(paneIssues) // the worktree went away under us
+	}
 	s := m.terms[dir]
 	if s == nil {
 		return m, m.ensureTerm()
@@ -1931,14 +2019,12 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			}
-			if m.threePane() && m.pane == paneDiff {
+			if m.threePane() && m.overGitPane(msg) {
+				m.gitSel.clear()
 				switch m.gitMode {
 				case gitModeFiles:
-					d := 1
-					if up {
-						d = -1
-					}
-					return m, m.moveGitSel(d)
+					m.scrollGitRegion(msg, up)
+					return m, nil
 				case gitModeLog:
 					if up && m.commitSel > 0 {
 						m.commitSel--
@@ -1966,9 +2052,13 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.MouseButtonLeft, tea.MouseButtonNone:
-		// drag selection in the claude pane, like a normal terminal:
-		// press anchors, drag extends, release copies to the clipboard
+		// drag selection, like a normal terminal: press anchors, drag
+		// extends, release copies to the clipboard. The git pane selects over
+		// its rendered text; the claude and shell panes over terminal cells.
 		if m.screen == scrMain && m.threePane() {
+			if done, cmd := m.selectGitText(msg); done {
+				return m, cmd
+			}
 			s, z := m.terms[m.claudeDir()], m.zones.Get("pane:claude")
 			if sh, zt := m.shells[m.claudeDir()], m.zones.Get("pane:term"); sh != nil && (sh.selecting() || (zt != nil && !zt.IsZero() && zt.InBounds(msg))) {
 				s, z = sh, zt
@@ -1998,6 +2088,7 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 									m.err = err
 								} else {
 									m.copiedUntil = time.Now().Add(2 * time.Second)
+									m.copiedFrom = paneClaude
 								}
 							}
 							return m, nil
@@ -2013,6 +2104,114 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		return m.handleClick(msg)
 	}
 	return m, nil
+}
+
+// overGitPane reports whether a mouse event lands in the git pane. Scrolling
+// follows the pointer rather than the focused pane, the way a terminal does.
+func (m Model) overGitPane(msg tea.MouseMsg) bool {
+	z := m.zones.Get("pane:diff")
+	return z != nil && !z.IsZero() && z.InBounds(msg)
+}
+
+// gitBodyPos converts a mouse event into a position in the git pane's body:
+// column and line past the border, title and rule.
+func (m Model) gitBodyPos(msg tea.MouseMsg) (col, line int) {
+	z := m.zones.Get("pane:diff")
+	if z == nil || z.IsZero() {
+		return -1, -1
+	}
+	x, y := z.Pos(msg)
+	return x - 1, y - 3
+}
+
+// files-mode regions of the git pane, each scrolling on its own.
+const (
+	gitRegionUnstaged = iota
+	gitRegionStaged
+	gitRegionDiff
+)
+
+// gitRegionAt tells which region the pointer is over in files mode.
+func (m Model) gitRegionAt(msg tea.MouseMsg) int {
+	w, h := m.gitPaneSize()
+	listH, lw := m.gitFilesLayout(w, h)
+	col, line := m.gitBodyPos(msg)
+	if line >= listH || line < 0 {
+		return gitRegionDiff
+	}
+	if col <= lw {
+		return gitRegionUnstaged
+	}
+	return gitRegionStaged
+}
+
+// scrollGitRegion moves the view under the pointer: one row for the file
+// lists, which are short, and three lines for the diff below them.
+func (m *Model) scrollGitRegion(msg tea.MouseMsg, up bool) {
+	w, h := m.gitPaneSize()
+	listH, _ := m.gitFilesLayout(w, h)
+	switch r := m.gitRegionAt(msg); r {
+	case gitRegionUnstaged, gitRegionStaged:
+		off := &m.gitScroll[r]
+		if up {
+			*off--
+		} else {
+			*off++
+		}
+		*off = clampScroll(*off, len(m.gitList(r)), listH-1)
+	default:
+		if up {
+			m.scrollGitDiff(-3)
+		} else {
+			m.scrollGitDiff(3)
+		}
+	}
+}
+
+// selectGitText runs a drag selection over the git pane's rendered text:
+// press anchors, motion extends, release copies. It reports whether it
+// consumed the event.
+func (m *Model) selectGitText(msg tea.MouseMsg) (bool, tea.Cmd) {
+	switch msg.Action {
+	case tea.MouseActionPress:
+		if msg.Button != tea.MouseButtonLeft || !m.overGitPane(msg) {
+			m.gitSel.clear()
+			return false, nil
+		}
+		col, line := m.gitBodyPos(msg)
+		m.gitSel.press(col, line)
+		return true, nil
+	case tea.MouseActionMotion:
+		if !m.gitSel.on {
+			return false, nil
+		}
+		col, line := m.gitBodyPos(msg)
+		m.gitSel.drag(col, line)
+		return true, nil
+	case tea.MouseActionRelease:
+		if !m.gitSel.on {
+			return false, nil
+		}
+		if !m.gitSel.release() {
+			return false, nil // a click, not a selection: let it through
+		}
+		a, b, ok := m.gitSel.bounds()
+		if !ok {
+			return true, nil
+		}
+		w, h := m.gitPaneSize()
+		_, body := m.gitPaneContent(w, h)
+		if text := selectedText(strings.Split(body, "\n"), a, b); text != "" {
+			if err := copyToClipboard(text); err != nil {
+				m.err = err
+			} else {
+				m.copiedUntil = time.Now().Add(2 * time.Second)
+				m.copiedFrom = paneDiff
+			}
+		}
+		return true, nil
+	}
+	return false, nil
 }
 
 func (m Model) clicked(msg tea.MouseMsg, id string) bool {

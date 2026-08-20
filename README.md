@@ -96,6 +96,29 @@ table and detail view with the wheel.
 panes run in the selected worktree and survive quitting — see
 [Background sessions](#background-sessions).
 
+### The git pane
+
+Files mode puts the unstaged and staged lists side by side with the selected
+file's diff underneath. Each of the three scrolls on its own: the wheel
+moves whichever one the pointer is over, so reading down a long diff doesn't
+drag the file lists with it. Without a mouse, `pgup`/`pgdn` (or
+`shift+↑`/`shift+↓`) scroll the preview while `↑`/`↓` keep moving between
+files.
+
+| Key | Action |
+| --- | --- |
+| `↑` `↓` | move between files (the list follows the cursor) |
+| `pgup` `pgdn` | scroll the diff preview, leaving the cursor put |
+| `tab` `←` `→` | switch between unstaged and staged |
+| `space` | stage / unstage the file |
+| `enter` | hunk-by-hunk staging |
+| `l` / `b` | commit log / branch diff vs the base |
+| `c` | commit form (`ctrl+g` drafts a message with claude) |
+
+Drag with the mouse to select text anywhere in the pane — diff lines, file
+names, log entries — and releasing copies it to the clipboard, the same as
+in the claude and shell panes. A plain click still selects a file.
+
 ### Where worktrees live
 
 Inside the repo under `.worktrees/` (added to `.git/info/exclude`
