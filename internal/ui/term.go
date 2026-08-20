@@ -18,8 +18,8 @@ import (
 	"github.com/creack/pty"
 )
 
-// claudeTermMsg signals fresh output from a claude terminal session.
-type claudeTermMsg struct{ dir string }
+// claudeTermMsg signals fresh output from an embedded terminal session.
+type claudeTermMsg struct{ s *claudeSession }
 
 // claudeSession is an interactive `claude` running in a pty, mirrored into
 // the claude pane through a virtual terminal with scrollback.
@@ -47,17 +47,28 @@ type claudeSession struct {
 // selPoint addresses a cell across scrollback + live screen.
 type selPoint struct{ line, col int }
 
-// startTerm is swappable so tests don't spawn real claude processes.
-var startTerm = startClaudeSession
+// startTerm and startShell are swappable so tests don't spawn processes.
+var (
+	startTerm = func(dir string, cols, rows int) (*claudeSession, error) {
+		return startProgramSession(dir, cols, rows, "claude")
+	}
+	startShell = func(dir string, cols, rows int) (*claudeSession, error) {
+		sh := os.Getenv("SHELL")
+		if sh == "" {
+			sh = "/bin/zsh"
+		}
+		return startProgramSession(dir, cols, rows, sh)
+	}
+)
 
-func startClaudeSession(dir string, cols, rows int) (*claudeSession, error) {
+func startProgramSession(dir string, cols, rows int, name string, args ...string) (*claudeSession, error) {
 	if cols < 20 {
 		cols = 20
 	}
 	if rows < 5 {
 		rows = 5
 	}
-	cmd := exec.Command("claude")
+	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 	p, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
@@ -112,7 +123,7 @@ func (s *claudeSession) ping() {
 func waitClaudeTerm(s *claudeSession) tea.Cmd {
 	return func() tea.Msg {
 		<-s.notify
-		return claudeTermMsg{dir: s.dir}
+		return claudeTermMsg{s: s}
 	}
 }
 

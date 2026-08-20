@@ -19,6 +19,7 @@ func TestViewSmoke(t *testing.T) {
 	startTerm = func(dir string, cols, rows int) (*claudeSession, error) {
 		return nil, errors.New("claude sessions disabled in tests")
 	}
+	startShell = startTerm
 
 	cfg := &config.Config{BranchTypes: []string{"feature", "bugfix"}, SlugMaxLen: 48}
 	for _, size := range [][2]int{{40, 10}, {80, 24}, {110, 30}, {200, 60}} {
@@ -49,7 +50,7 @@ func TestViewSmoke(t *testing.T) {
 				}
 			}
 		}
-		for pane := 0; pane < 3; pane++ {
+		for pane := 0; pane < paneCount; pane++ {
 			mp, _ := model.focusPane(pane)
 			if v := mp.(Model).View(); v == "" {
 				t.Fatalf("empty view, pane %d at %dx%d", pane, size[0], size[1])

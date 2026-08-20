@@ -23,7 +23,7 @@ var (
 	paneTitleStyle = lipgloss.NewStyle().Bold(true).Foreground(subtle)
 	paneTitleFocus = lipgloss.NewStyle().Bold(true).Foreground(accent)
 
-	docStyle    = lipgloss.NewStyle().Padding(1, 2)
+	docStyle    = lipgloss.NewStyle().Padding(1, 2, 0, 2)
 	titleStyle  = lipgloss.NewStyle().Bold(true).Foreground(accent)
 	metaStyle   = lipgloss.NewStyle().Foreground(subtle)
 	tabActive   = lipgloss.NewStyle().Bold(true).Foreground(accent).Underline(true).Padding(0, 1)
