@@ -82,6 +82,21 @@ func (m Model) branchForKey(key string) (local, remote string) {
 	return "", ""
 }
 
+// paneLabel names a working directory for pane titles: the linked Linear
+// card's key when the worktree branch carries one, else the dir basename.
+func (m Model) paneLabel(dir string) string {
+	for i := range m.wts {
+		wt := &m.wts[i]
+		if wt.Path == dir {
+			if k := issueKeyFromBranch(wt.Branch); k != "" {
+				return k + " · " + filepath.Base(dir)
+			}
+			break
+		}
+	}
+	return filepath.Base(dir)
+}
+
 func relPath(root, path string) string {
 	rel, err := filepath.Rel(root, path)
 	if err != nil {
