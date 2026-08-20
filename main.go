@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -35,8 +36,8 @@ usage:
   treeline auth github  connect to GitHub for CI status (device flow;
                         not needed if the gh CLI is installed and logged in)
   treeline rm <target>  remove a worktree by branch, issue key, or path
-                        (--branch also deletes the branch, --force skips the
-                        dirty-worktree confirmation)
+                        (--branch also deletes the branch; --force skips the
+                        confirmations and breaks a lock held on the worktree)
   treeline sessions     list the claude/shell sessions treeline keeps running
                         in the background (kill <name> or kill --all to stop)
   treeline shell-init   print the "tl" shell function (add to your .zshrc)
@@ -285,13 +286,11 @@ func runRemove(args []string) {
 	default:
 		if wt.Dirty && !force {
 			fmt.Printf("%s has uncommitted changes — remove and discard them? [y/N] ", wt.Branch)
-			if a := readLine(bufio.NewReader(os.Stdin)); a != "y" && a != "Y" && a != "yes" {
+			if !confirm() {
 				fatal("aborted")
 			}
 		}
-		if err := gitx.Remove(root, wt.Path, wt.Dirty); err != nil {
-			fatal(err.Error())
-		}
+		removeAskingAboutLock(root, *wt, force)
 	}
 	fmt.Println("✓ removed worktree " + wt.Path)
 
@@ -443,6 +442,52 @@ func pickRepo(cfg *config.Config) string {
 		fatal("no repository chosen")
 	}
 	return cfg.Repos[names[choice-1]].Path
+}
+
+// removeAskingAboutLock removes a worktree, asking first when a lock has to be
+// broken — git needs a second --force for that and refuses outright without
+// one, and whatever holds the lock (a claude session working in there, say)
+// loses the directory under it.
+func removeAskingAboutLock(root string, wt gitx.Worktree, force bool) {
+	unlock := force
+	if wt.Locked && !force {
+		fmt.Printf("%s is locked by %s\n", wt.Branch, lockLabel(wt.LockReason))
+		fmt.Print("force remove anyway? [y/N] ")
+		if !confirm() {
+			fatal("aborted")
+		}
+		unlock = true
+	}
+	err := gitx.Remove(root, wt.Path, wt.Dirty, unlock)
+	if errors.Is(err, gitx.ErrLocked) && !unlock {
+		// the lock was taken after the worktree list was read
+		fmt.Println(err.Error())
+		fmt.Print("force remove anyway? [y/N] ")
+		if !confirm() {
+			fatal("aborted")
+		}
+		err = gitx.Remove(root, wt.Path, wt.Dirty, true)
+	}
+	if err != nil {
+		fatal(err.Error())
+	}
+}
+
+// confirm reads a yes/no answer, defaulting to no.
+func confirm() bool {
+	switch readLine(bufio.NewReader(os.Stdin)) {
+	case "y", "Y", "yes":
+		return true
+	}
+	return false
+}
+
+// lockLabel describes a lock, standing in for a missing reason.
+func lockLabel(reason string) string {
+	if reason == "" {
+		return "another process (no reason given)"
+	}
+	return reason
 }
 
 func readLine(in *bufio.Reader) string {

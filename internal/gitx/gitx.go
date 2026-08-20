@@ -3,6 +3,7 @@ package gitx
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -19,6 +20,8 @@ type Worktree struct {
 	Bare        bool
 	IsPrimary   bool // the main checkout
 	Prunable    bool // directory is gone; git would prune it
+	Locked      bool // git refuses to remove it without a second --force
+	LockReason  string
 	Dirty       bool
 	Ahead       int
 	Behind      int
@@ -79,6 +82,11 @@ func List(root string) ([]Worktree, error) {
 			cur.Bare = true
 		case line == "prunable" || strings.HasPrefix(line, "prunable "):
 			cur.Prunable = true
+		case line == "locked" || strings.HasPrefix(line, "locked "):
+			// claude and other tools lock a worktree while they work in it,
+			// leaving the reason for the lock here
+			cur.Locked = true
+			cur.LockReason = strings.TrimSpace(strings.TrimPrefix(line, "locked"))
 		}
 	}
 	flush()
@@ -376,14 +384,40 @@ func Prune(root string) error {
 }
 
 // Remove deletes the worktree at path. force discards uncommitted changes.
-func Remove(root, path string, force bool) error {
+// ErrLocked reports a removal git refused because the worktree is locked.
+// Callers can offer to override it — that is what Remove's unlock does.
+var ErrLocked = errors.New("worktree is locked")
+
+// Remove deletes a worktree. force discards uncommitted changes (git's -f),
+// and unlock breaks a lock as well (git wants a second -f for that, and
+// refuses outright without it).
+func Remove(root, path string, force, unlock bool) error {
 	args := []string{"worktree", "remove"}
-	if force {
+	if force || unlock {
+		args = append(args, "--force")
+	}
+	if unlock {
 		args = append(args, "--force")
 	}
 	args = append(args, path)
-	_, err := run(root, args...)
-	return err
+	if _, err := run(root, args...); err != nil {
+		if strings.Contains(err.Error(), "locked working tree") {
+			return fmt.Errorf("%w — %s", ErrLocked, lockReasonFrom(err.Error()))
+		}
+		return err
+	}
+	return nil
+}
+
+// lockReasonFrom pulls the reason out of git's refusal, which reads
+// "fatal: cannot remove a locked working tree, lock reason: <reason>".
+func lockReasonFrom(msg string) string {
+	if _, reason, ok := strings.Cut(msg, "lock reason: "); ok {
+		if line, _, _ := strings.Cut(reason, "\n"); strings.TrimSpace(line) != "" {
+			return strings.TrimSpace(line)
+		}
+	}
+	return "no reason given"
 }
 
 // DeleteBranch force-deletes a local branch.

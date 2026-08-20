@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/markcipolla/treeline/internal/branch"
+	"github.com/markcipolla/treeline/internal/gitx"
 	"github.com/markcipolla/treeline/internal/linear"
 )
 
@@ -475,24 +476,64 @@ func (m Model) viewDeleteConfirm() string {
 	}
 	wt := *m.delTarget
 	var b strings.Builder
-	b.WriteString(warnStyle.Render("Remove worktree?") + "\n\n")
+	title := "Remove worktree?"
+	if m.delForce {
+		title = "Force remove locked worktree?"
+	}
+	b.WriteString(warnStyle.Render(title) + "\n\n")
 	b.WriteString(labelStyle.Render("branch") + " " + wt.Branch + "\n")
 	b.WriteString(labelStyle.Render("path") + " " + relPath(m.root, wt.Path) + "\n")
+	if reason := lockReason(wt, m.delErr); reason != "" {
+		b.WriteString(labelStyle.Render("locked by") + " " + reason + "\n")
+	}
 	if wt.Dirty {
 		b.WriteString("\n" + warnStyle.Render("⚠ has uncommitted changes — removing will discard them") + "\n")
+	}
+	if m.delForce {
+		// wrapped: the modal is sized to its content, and an unwrapped
+		// sentence this long would run past the edge of the terminal
+		b.WriteString("\n" + errStyle.Width(66).Render("⚠ git refused: the worktree is locked. Forcing pulls "+
+			"the directory out from under whatever holds it — a claude session running "+
+			"there loses the files it is working on.") + "\n")
 	}
 	b.WriteString("\n")
 	if m.removing {
 		b.WriteString(m.spinner.View() + " removing…")
 	} else {
+		removeLabel, branchLabel := "remove", "remove + delete branch"
+		if m.delForce {
+			removeLabel, branchLabel = "force remove", "force remove + delete branch"
+		}
 		b.WriteString(m.buttonRow(
-			m.button("btn:remove", "remove", m.delFocus == 0),
-			m.button("btn:remove-branch", "remove + delete branch", m.delFocus == 1),
+			m.button("btn:remove", removeLabel, m.delFocus == 0),
+			m.button("btn:remove-branch", branchLabel, m.delFocus == 1),
 			m.button("btn:cancel", "cancel", m.delFocus == 2),
 		) + "\n\n")
-		b.WriteString(m.statusOrHelp([]key.Binding{keyChoose2, keyConfirm2, keyRemove, keyRemoveB, keyCancel}))
+		remove, removeB := keyRemove, keyRemoveB
+		if m.delForce {
+			remove, removeB = keyForce, keyForceB
+		}
+		b.WriteString(m.statusOrHelp([]key.Binding{keyChoose2, keyConfirm2, remove, removeB, keyCancel}))
 	}
 	return boxStyle.Render(b.String())
+}
+
+// lockReason names whatever holds the worktree: the lock recorded in git's
+// worktree list, or — when the list is older than the lock — the reason git
+// gave when it refused to remove it.
+func lockReason(wt gitx.Worktree, err error) string {
+	if wt.LockReason != "" {
+		return wt.LockReason
+	}
+	if wt.Locked {
+		return "no reason given"
+	}
+	if err != nil && errors.Is(err, gitx.ErrLocked) {
+		if _, reason, ok := strings.Cut(err.Error(), "— "); ok {
+			return reason
+		}
+	}
+	return ""
 }
 
 func (m Model) viewAuth() string {
