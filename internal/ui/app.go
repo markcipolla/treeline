@@ -793,35 +793,30 @@ func (m *Model) resize() {
 		w = 40
 	}
 
+	l := m.layout()
 	if m.threePane() {
-		topH, bottomH := m.panelHeights()
-		// the grid is the pane: full width, and only the top border, the
-		// title and the title rule sit above it
-		m.setTableLayout(w, topH-2)
-		lw := w / 2
-		rw := w - lw
-		inner := bottomH - 4 // borders + pane title + title rule
+		// the grid is the pane: only the top border, the title and the
+		// title rule sit above it
+		m.setTableLayout(l.issues.w, l.issues.h-2)
+		// each pane's inner grid: borders + pane title + title rule
 		for _, t := range m.terms {
-			t.resize(lw-2, inner)
+			t.resize(l.claude.w-3, l.claude.h-4)
 		}
-		gitH, termH := m.rightSplit()
-		gitInner := gitH - 4
 		for _, t := range m.shells {
-			t.resize(rw-2, termH-4)
+			t.resize(l.term.w-3, l.term.h-4)
 		}
-		m.diffVP.Width = rw - 2
-		m.diffVP.Height = gitInner
-		inner = gitInner
-		m.commitSubject.Width = rw - 10
-		m.commitBody.SetWidth(rw - 6)
-		bh := inner - 9
+		m.diffVP.Width = l.git.w - 2
+		m.diffVP.Height = l.git.h - 4
+		m.commitSubject.Width = l.git.w - 10
+		m.commitBody.SetWidth(l.git.w - 6)
+		bh := l.git.h - 13
 		if bh < 3 {
 			bh = 3
 		}
 		m.commitBody.SetHeight(bh)
 		m.setDiffContent()
 	} else {
-		m.setTableLayout(w, h)
+		m.setTableLayout(l.issues.w, l.issues.h)
 	}
 
 	m.viewport.Width = w
@@ -847,70 +842,97 @@ func (m *Model) resize() {
 	}
 }
 
-// setTableLayout sizes the issue table's columns for the given width.
-// ASSIGNEE is the first column to go when the terminal is narrow, then REPO
-// (whose cell only appears with several repos registered, and whose repo the
-// worktree path names anyway): a zero width hides a column outright, which
-// the table widget and the frame drawing in renderTable both honour.
-func (m *Model) setTableLayout(w, h int) {
-	pad := 3 // each cell: 1-char divider + 1 padding on both sides
-	w--      // renderTable appends a right edge to every row
-	keyW, priW, gitW, ciW := 10, 8, 10, 3
-	const titleMin, wtMin, asgFull, repoMax = 12, 8, 14, 14
+// setTableLayout sizes the issue table's columns for the given width. Columns
+// are shed as the space shrinks, least useful first: ASSIGNEE, then REPO
+// (whose worktree path names the repo anyway), then WORKTREE (the pane titles
+// name the directory), then PRIORITY, and CI last. KEY, TITLE and GIT stay
+// whatever happens — they are what makes a row worth reading. A zero width
+// hides a column outright, which the table widget and the frame drawing in
+// renderTable both honour.
+// repoColWidth is REPO's width: only as wide as the names it holds, since
+// repo names are short and the space is better spent on TITLE. Zero with a
+// single repo, when the column is out of the set entirely.
+func (m Model) repoColWidth() int {
+	if !m.multiRepo() {
+		return 0
+	}
+	w := lipgloss.Width("REPO")
+	for _, r := range m.repos {
+		if n := lipgloss.Width(r.name); n > w {
+			w = n
+		}
+	}
+	if w > repoMax {
+		w = repoMax
+	}
+	return w
+}
 
-	// the columns that are always there, TITLE and WORKTREE at their floors
-	fixed := keyW + priW + gitW + ciW + titleMin + wtMin
-	// each optional column costs its width plus a divider and padding
-	fits := func(widths ...int) bool {
-		total := fixed + 6*pad
-		for _, x := range widths {
+// gridFullWidth is the width at which the grid sheds nothing: every column
+// present, TITLE and WORKTREE at their targets rather than their floors. The
+// issues column grows to this when it takes focus in a column layout.
+func (m Model) gridFullWidth() int {
+	total := colKeyW + colGitW + titleWant + 3*gridPad
+	for _, x := range []int{colAsgW, m.repoColWidth(), colPriW, wtWant, colCiW} {
+		if x > 0 {
+			total += x + gridPad
+		}
+	}
+	return total + 1 // the right edge setTableLayout budgets for
+}
+
+func (m *Model) setTableLayout(w, h int) {
+	pad := gridPad
+	w-- // renderTable appends a right edge to every row
+	keyW, priW, gitW, ciW := colKeyW, colPriW, colGitW, colCiW
+	repoW := m.repoColWidth()
+	asgW, wtW := colAsgW, wtMin
+
+	// used is the whole grid's width with TITLE at t: the columns that are
+	// always there, plus each optional one and its divider and padding
+	used := func(t int) int {
+		total := keyW + gitW + t + 3*pad
+		for _, x := range []int{asgW, repoW, priW, wtW, ciW} {
 			if x > 0 {
 				total += x + pad
 			}
 		}
-		return total <= w
+		return total
 	}
-
-	// REPO is only as wide as the names it holds — repo names are short, and
-	// the space is better spent on TITLE
-	repoW := 0
-	if m.multiRepo() {
-		repoW = lipgloss.Width("REPO")
-		for _, r := range m.repos {
-			if n := lipgloss.Width(r.name); n > repoW {
-				repoW = n
+	// shed columns until the row fits with TITLE at its floor
+	for _, drop := range []*int{&asgW, &repoW, &wtW, &priW, &ciW} {
+		if used(titleMin) <= w {
+			break
+		}
+		*drop = 0
+	}
+	if wtW > 0 {
+		if want := w * 22 / 100; want > wtW {
+			wtW = want // as wide as the paths it holds, given the room
+		}
+	}
+	// a narrow grid keeps shedding: a title truncated to a dozen columns
+	// tells you nothing, while the worktree path is in the pane titles and
+	// the priority is already in the row order
+	if w < narrowGrid {
+		for _, drop := range []*int{&wtW, &priW} {
+			if used(titleWant) <= w {
+				break
 			}
-		}
-		if repoW > repoMax {
-			repoW = repoMax
-		}
-	}
-	asgW := asgFull
-	if !fits(asgW, repoW) {
-		asgW = 0
-	}
-	if !fits(asgW, repoW) {
-		repoW = 0
-	}
-	cols := 6
-	for _, x := range []int{asgW, repoW} {
-		if x > 0 {
-			cols++
+			*drop = 0
 		}
 	}
 
-	wtW := w * 22 / 100
-	if wtW < 14 {
-		wtW = 14
-	}
-	titleW := w - keyW - priW - asgW - repoW - gitW - ciW - wtW - cols*pad
+	titleW := w - used(0) // TITLE takes whatever is left over
 	if titleW < titleMin {
 		// give TITLE its floor back out of WORKTREE so the frame still fits
-		wtW -= titleMin - titleW
-		titleW = titleMin
-		if wtW < wtMin {
-			wtW = wtMin
+		if wtW > 0 {
+			wtW -= titleMin - titleW
+			if wtW < wtMin {
+				wtW = wtMin
+			}
 		}
+		titleW = titleMin
 	}
 	// hiding REPO hands the repo name back to the worktree cell, so rows built
 	// under the old column set have to be rebuilt
@@ -1725,9 +1747,6 @@ const (
 	paneCount  = 4
 )
 
-// threePane reports whether the terminal is wide enough for the panel layout.
-func (m Model) threePane() bool { return m.width >= 110 }
-
 // paneEnabled reports whether a pane can hold focus: claude, git and the shell
 // all need a worktree to work in, so with none checked out the issues list is
 // the only pane there is.
@@ -1781,42 +1800,23 @@ func (m *Model) ensureTerm() tea.Cmd {
 	return waitClaudeTerm(s)
 }
 
-// termSize is the claude pane's inner grid: half width, bottom panel height.
+// termSize is the claude pane's inner grid, a column in from the border.
 func (m Model) termSize() (cols, rows int) {
-	w := m.width - docStyle.GetHorizontalFrameSize()
-	_, bottomH := m.panelHeights()
-	return w/2 - 2, bottomH - 4
+	b := m.layout().claude
+	return b.w - 3, b.h - 4
 }
 
-// gitPaneSize is the git pane's inner grid: the right column's width and its
-// share of the bottom panel. It mirrors viewPanels' arithmetic so the mouse
-// handler measures the same box the renderer drew.
+// gitPaneSize is the git pane's inner grid. It reads the same layout the
+// renderer drew from, so the mouse handler measures the box on screen.
 func (m Model) gitPaneSize() (w, h int) {
-	full := m.width - docStyle.GetHorizontalFrameSize()
-	gitH, _ := m.rightSplit()
-	return full - full/2 - 4, gitH - 4
-}
-
-// rightSplit divides the right column between the git pane and the shell.
-func (m Model) rightSplit() (gitH, termH int) {
-	_, bottomH := m.panelHeights()
-	gitH = bottomH * 3 / 5
-	if gitH < 8 {
-		gitH = 8
-	}
-	termH = bottomH - gitH
-	if termH < 6 {
-		termH = 6
-		gitH = bottomH - termH
-	}
-	return gitH, termH
+	b := m.layout().git
+	return b.w - 4, b.h - 4
 }
 
 // shellSize is the shell pane's inner grid.
 func (m Model) shellSize() (cols, rows int) {
-	w := m.width - docStyle.GetHorizontalFrameSize()
-	_, termH := m.rightSplit()
-	return w - w/2 - 2, termH - 4
+	b := m.layout().term
+	return b.w - 3, b.h - 4
 }
 
 // ensureShell starts (or reattaches) the shell for the selected worktree.
@@ -1869,32 +1869,6 @@ func (m Model) keyShell(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		s.pty.Write(b)
 	}
 	return m, nil
-}
-
-// panelHeights splits the vertical space: the issues strip on top is one
-// line when unfocused and half the screen when focused; claude and diff
-// share what remains below.
-func (m Model) panelHeights() (topH, bottomH int) {
-	avail := m.height - 8 // doc frame, header + divider, summary, help, spare
-	if avail < 12 {
-		avail = 12
-	}
-	topH = 3 // border + summary line + border
-	if m.pane == paneIssues {
-		topH = avail / 2
-		if topH < 8 {
-			topH = 8
-		}
-	}
-	bottomH = avail - topH
-	if bottomH < 5 {
-		bottomH = 5
-		topH = avail - bottomH
-		if topH < 3 {
-			topH = 3
-		}
-	}
-	return topH, bottomH
 }
 
 // claudeDir is the directory the claude pane talks in: the selected issue's
@@ -2202,14 +2176,14 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				case tea.MouseActionPress:
 					if msg.Button == tea.MouseButtonLeft && inPane {
 						x, y := z.Pos(msg)
-						s.selPress(x-1, y-3) // border col; border+title+rule rows
+						s.selPress(x-1, y-2) // the zone starts inside: body pad, title+rule
 						return m, nil
 					}
 					s.clearSel()
 				case tea.MouseActionMotion:
 					if s.selecting() && z != nil && !z.IsZero() {
 						x, y := z.Pos(msg)
-						s.selDrag(x-1, y-3)
+						s.selDrag(x-1, y-2)
 						return m, nil
 					}
 				case tea.MouseActionRelease:
@@ -2269,14 +2243,14 @@ func (m Model) paneUnder(msg tea.MouseMsg) (int, bool) {
 }
 
 // gitBodyPos converts a mouse event into a position in the git pane's body:
-// column and line past the border, title and rule.
+// the pane's zone covers its inside, so only the title and rule are above it.
 func (m Model) gitBodyPos(msg tea.MouseMsg) (col, line int) {
 	z := m.zones.Get("pane:diff")
 	if z == nil || z.IsZero() {
 		return -1, -1
 	}
 	x, y := z.Pos(msg)
-	return x - 1, y - 3
+	return x - 1, y - 2
 }
 
 // files-mode regions of the git pane, each scrolling on its own.
@@ -2450,8 +2424,8 @@ func (m Model) handleClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			if s := m.terms[m.claudeDir()]; s != nil {
 				z := m.zones.Get("pane:claude")
 				x, y := z.Pos(msg)
-				// pane chrome: border column, then border+title+rule rows
-				if url := s.urlAt(x-1, y-3); url != "" {
+				// pane chrome around the body: a pad column, title and rule
+				if url := s.urlAt(x-1, y-2); url != "" {
 					_ = openBrowser(url)
 					return m, nil
 				}
@@ -2463,7 +2437,7 @@ func (m Model) handleClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			if s := m.shells[m.claudeDir()]; s != nil {
 				z := m.zones.Get("pane:term")
 				x, y := z.Pos(msg)
-				if url := s.urlAt(x-1, y-3); url != "" {
+				if url := s.urlAt(x-1, y-2); url != "" {
 					_ = openBrowser(url)
 					return m, nil
 				}

@@ -39,7 +39,7 @@ func withSecondRepo(t *testing.T, m Model) Model {
 // TestRepoColumnOnlyWithSeveralRepos: one repo means every row would say the
 // same thing, so the column stays out of the set entirely.
 func TestRepoColumnOnlyWithSeveralRepos(t *testing.T) {
-	m := withIssues(newTestModel(t, 200))
+	m := withIssues(newTestModel(t, 160))
 	if m.multiRepo() {
 		t.Fatal("a fresh model should hold a single repo")
 	}
@@ -59,7 +59,7 @@ func TestRepoColumnOnlyWithSeveralRepos(t *testing.T) {
 		t.Fatal("no REPO column with two repos")
 	}
 	if w := m.table.Columns()[i].Width; w <= 0 {
-		t.Fatalf("REPO hidden at 200 cols (width %d)", w)
+		t.Fatalf("REPO hidden at 160 cols (width %d)", w)
 	}
 	if !strings.Contains(m.View(), "REPO") {
 		t.Error("rendered view is missing the REPO header")
@@ -69,7 +69,7 @@ func TestRepoColumnOnlyWithSeveralRepos(t *testing.T) {
 // TestRepoColumnCells: worktree rows name their repo, cards inherit it from
 // the worktree they are linked to, and cards with no worktree stay blank.
 func TestRepoColumnCells(t *testing.T) {
-	m := newTestModel(t, 200)
+	m := newTestModel(t, 160)
 	m.authed = true
 	m.issues = []linear.Issue{
 		{Identifier: "LAB-6", Title: "Sidecar work", State: "In Progress", StateType: "started"},

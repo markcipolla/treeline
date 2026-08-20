@@ -18,8 +18,8 @@ var (
 
 	groupTitleStyle = lipgloss.NewStyle().Bold(true).Foreground(subtle)
 
-	paneStyle      = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(subtle)
-	paneFocusStyle = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(accent)
+	// the panel layout draws its own borders (see frame.go); the panes only
+	// style their titles, and metaStyle/okStyle tint the frame by focus
 	paneTitleStyle = lipgloss.NewStyle().Bold(true).Foreground(subtle)
 	paneTitleFocus = lipgloss.NewStyle().Bold(true).Foreground(accent)
 

@@ -22,7 +22,7 @@ func TestViewSmoke(t *testing.T) {
 	startShell = startTerm
 
 	cfg := &config.Config{BranchTypes: []string{"feature", "bugfix"}, SlugMaxLen: 48}
-	for _, size := range [][2]int{{40, 10}, {80, 24}, {110, 30}, {200, 60}} {
+	for _, size := range [][2]int{{40, 10}, {80, 24}, {110, 30}, {180, 40}, {200, 60}, {260, 60}} {
 		m := New(cfg, t.TempDir())
 		mm, _ := m.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
 		model := mm.(Model)
