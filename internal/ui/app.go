@@ -101,9 +101,10 @@ type Model struct {
 	searchSeq     int    // bumped per keystroke; stale ticks/results are dropped
 	searchedFor   string // query the current results answer; "" = none yet
 
-	// three-panel main screen (wide terminals): 0 issues, 1 claude, 2 diff
-	pane  int
-	terms map[string]*claudeSession // interactive claude per directory
+	// panel main screen (wide terminals): 0 issues, 1 claude, 2 git, 3 shell
+	pane   int
+	terms  map[string]*claudeSession // interactive claude per directory
+	shells map[string]*claudeSession // shell per directory
 
 	diffVP      viewport.Model
 	diffRaw     string
@@ -224,6 +225,7 @@ func New(cfg *config.Config, root string) Model {
 		commitSubject: commitSubject,
 		commitBody:    commitBody,
 		terms:         map[string]*claudeSession{},
+		shells:        map[string]*claudeSession{},
 		diffVP:        viewport.New(0, 0),
 		viewport:      viewport.New(0, 0),
 		help:          help.New(),
@@ -241,9 +243,12 @@ func New(cfg *config.Config, root string) Model {
 // JumpPath is the worktree path the user chose to jump into, if any.
 func (m Model) JumpPath() string { return m.jumpPath }
 
-// Close shuts down any claude sessions the panes started.
+// Close shuts down any embedded sessions the panes started.
 func (m Model) Close() {
 	for _, s := range m.terms {
+		s.close()
+	}
+	for _, s := range m.shells {
 		s.close()
 	}
 }
@@ -420,14 +425,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case claudeTermMsg:
-		s := m.terms[msg.dir]
-		if s == nil {
-			return m, nil
+		s := msg.s
+		if m.terms[s.dir] != s && m.shells[s.dir] != s {
+			return m, nil // session was replaced or closed
 		}
 		cmds := []tea.Cmd{waitClaudeTerm(s)} // re-arm; the view reads the vt directly
-		// claude edits files as it works; keep the git pane current.
+		// claude and shell commands edit files; keep the git pane current.
 		// Throttled, not debounced — claude's UI animates continuously.
-		if msg.dir == m.gitFor && time.Since(m.gitFreshAt) > 3*time.Second {
+		if s.dir == m.gitFor && time.Since(m.gitFreshAt) > 3*time.Second {
 			m.gitFreshAt = time.Now()
 			cmds = append(cmds, m.reloadGit(), m.loadSelectedFileDiff(), loadWorktreesCmd(m.root))
 		}
@@ -577,8 +582,14 @@ func (m *Model) resize() {
 		for _, t := range m.terms {
 			t.resize(lw-2, inner)
 		}
+		gitH, termH := m.rightSplit()
+		gitInner := gitH - 4
+		for _, t := range m.shells {
+			t.resize(rw-2, termH-4)
+		}
 		m.diffVP.Width = rw - 2
-		m.diffVP.Height = inner
+		m.diffVP.Height = gitInner
+		inner = gitInner
 		m.commitSubject.Width = rw - 10
 		m.commitBody.SetWidth(rw - 6)
 		bh := inner - 9
@@ -1084,8 +1095,8 @@ func (m Model) repoName() string {
 
 func (m Model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if k.String() == "ctrl+c" {
-		if m.screen == scrMain && m.threePane() && m.pane == paneClaude {
-			if s := m.terms[m.claudeDir()]; s != nil && !s.exited.Load() {
+		if m.screen == scrMain && m.threePane() && (m.pane == paneClaude || m.pane == paneTerm) {
+			if s := m.paneSession(m.pane); s != nil && !s.exited.Load() {
 				s.pty.Write([]byte{0x03})
 				return m, nil
 			}
@@ -1154,14 +1165,17 @@ func (m Model) keyMain(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.pane == paneClaude {
 			return m.keyClaude(k) // claude gets everything; ctrl+q leaves
 		}
+		if m.pane == paneTerm {
+			return m.keyShell(k) // the shell gets everything; ctrl+q leaves
+		}
 		if m.pane == paneDiff && m.gitMode == gitModeCommit && k.String() != "ctrl+q" {
 			return m.keyGit(k) // the form owns tab/enter while typing
 		}
 		switch k.String() {
 		case "tab", "ctrl+q":
-			return m.focusPane((m.pane + 1) % 3)
+			return m.focusPane((m.pane + 1) % paneCount)
 		case "shift+tab":
-			return m.focusPane((m.pane + 2) % 3)
+			return m.focusPane((m.pane + paneCount - 1) % paneCount)
 		}
 		if m.pane == paneDiff {
 			return m.keyGit(k)
@@ -1267,6 +1281,8 @@ const (
 	paneIssues = 0
 	paneClaude = 1
 	paneDiff   = 2
+	paneTerm   = 3
+	paneCount  = 4
 )
 
 // threePane reports whether the terminal is wide enough for the panel layout.
@@ -1277,6 +1293,9 @@ func (m Model) focusPane(p int) (tea.Model, tea.Cmd) {
 	m.resize() // the issues strip grows/shrinks with focus
 	if p == paneClaude {
 		return m, m.ensureTerm()
+	}
+	if p == paneTerm {
+		return m, m.ensureShell()
 	}
 	if p == paneDiff {
 		m.gitFreshAt = time.Now()
@@ -1309,11 +1328,82 @@ func (m Model) termSize() (cols, rows int) {
 	return w/2 - 2, bottomH - 4
 }
 
+// rightSplit divides the right column between the git pane and the shell.
+func (m Model) rightSplit() (gitH, termH int) {
+	_, bottomH := m.panelHeights()
+	gitH = bottomH * 3 / 5
+	if gitH < 8 {
+		gitH = 8
+	}
+	termH = bottomH - gitH
+	if termH < 6 {
+		termH = 6
+		gitH = bottomH - termH
+	}
+	return gitH, termH
+}
+
+// shellSize is the shell pane's inner grid.
+func (m Model) shellSize() (cols, rows int) {
+	w := m.width - docStyle.GetHorizontalFrameSize()
+	_, termH := m.rightSplit()
+	return w - w/2 - 2, termH - 4
+}
+
+// ensureShell starts (or reattaches) the shell for the selected worktree.
+func (m *Model) ensureShell() tea.Cmd {
+	dir := m.claudeDir()
+	if m.shells[dir] != nil {
+		return nil
+	}
+	cols, rows := m.shellSize()
+	s, err := startShell(dir, cols, rows)
+	if err != nil {
+		m.err = err
+		return nil
+	}
+	m.shells[dir] = s
+	return waitClaudeTerm(s)
+}
+
+// paneSession maps an embedded-terminal pane to its session for the
+// selected directory.
+func (m Model) paneSession(pane int) *claudeSession {
+	if pane == paneTerm {
+		return m.shells[m.claudeDir()]
+	}
+	return m.terms[m.claudeDir()]
+}
+
+func (m Model) keyShell(k tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if k.String() == "ctrl+q" {
+		return m.focusPane((m.pane + 1) % paneCount)
+	}
+	dir := m.claudeDir()
+	s := m.shells[dir]
+	if s == nil {
+		return m, m.ensureShell()
+	}
+	if s.exited.Load() {
+		if k.String() == "enter" { // restart in place
+			delete(m.shells, dir)
+			return m, m.ensureShell()
+		}
+		return m, nil
+	}
+	if b := encodeKey(k); len(b) > 0 {
+		s.scrollLive()
+		s.clearSel()
+		s.pty.Write(b)
+	}
+	return m, nil
+}
+
 // panelHeights splits the vertical space: the issues strip on top is one
 // line when unfocused and half the screen when focused; claude and diff
 // share what remains below.
 func (m Model) panelHeights() (topH, bottomH int) {
-	avail := m.height - 9 // doc frame, header + divider, summary, help
+	avail := m.height - 8 // doc frame, header + divider, summary, help, spare
 	if avail < 12 {
 		avail = 12
 	}
@@ -1388,7 +1478,7 @@ func (m *Model) syncPanes() tea.Cmd {
 
 func (m Model) keyClaude(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if k.String() == "ctrl+q" {
-		return m.focusPane((m.pane + 1) % 3)
+		return m.focusPane((m.pane + 1) % paneCount)
 	}
 	dir := m.claudeDir()
 	s := m.terms[dir]
@@ -1552,8 +1642,8 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		up := msg.Button == tea.MouseButtonWheelUp
 		switch m.screen {
 		case scrMain:
-			if m.threePane() && m.pane == paneClaude {
-				if s := m.terms[m.claudeDir()]; s != nil {
+			if m.threePane() && (m.pane == paneClaude || m.pane == paneTerm) {
+				if s := m.paneSession(m.pane); s != nil {
 					if up {
 						s.scrollBy(3)
 					} else {
@@ -1600,8 +1690,11 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		// drag selection in the claude pane, like a normal terminal:
 		// press anchors, drag extends, release copies to the clipboard
 		if m.screen == scrMain && m.threePane() {
-			if s := m.terms[m.claudeDir()]; s != nil {
-				z := m.zones.Get("pane:claude")
+			s, z := m.terms[m.claudeDir()], m.zones.Get("pane:claude")
+			if sh, zt := m.shells[m.claudeDir()], m.zones.Get("pane:term"); sh != nil && (sh.selecting() || (zt != nil && !zt.IsZero() && zt.InBounds(msg))) {
+				s, z = sh, zt
+			}
+			if s != nil {
 				inPane := z != nil && !z.IsZero() && z.InBounds(msg)
 				switch msg.Action {
 				case tea.MouseActionPress:
@@ -1704,6 +1797,16 @@ func (m Model) handleClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			return m.focusPane(paneClaude)
 		case m.clicked(msg, "pane:diff"):
 			return m.focusPane(paneDiff)
+		case m.clicked(msg, "pane:term"):
+			if s := m.shells[m.claudeDir()]; s != nil {
+				z := m.zones.Get("pane:term")
+				x, y := z.Pos(msg)
+				if url := s.urlAt(x-1, y-3); url != "" {
+					_ = openBrowser(url)
+					return m, nil
+				}
+			}
+			return m.focusPane(paneTerm)
 		}
 		return m, nil
 

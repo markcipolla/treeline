@@ -164,7 +164,7 @@ func (m Model) viewMain() string {
 	if m.threePane() {
 		bindings = append([]key.Binding{keyPane}, bindings...)
 		switch m.pane {
-		case paneClaude:
+		case paneClaude, paneTerm:
 			bindings = []key.Binding{keyTermEsc}
 		case paneDiff:
 			bindings = []key.Binding{keyChoose, keyStage, keyHunks, keyCommitC, keyLog, keyBranchD, keyBack}
@@ -250,11 +250,32 @@ func (m Model) viewPanels() string {
 	center := m.zones.Mark("pane:claude",
 		pane(lw, bottomH, m.pane == paneClaude, claudeTitle, claudeBody))
 
-	gitTitle, gitBody := m.gitPaneContent(rw-4, bottomH-4)
+	gitH, termH := m.rightSplit()
+	gitTitle, gitBody := m.gitPaneContent(rw-4, gitH-4)
 	if wt := m.selectedRef().wt; wt != nil && wt.Prunable {
 		gitBody = warnStyle.Render("worktree directory is gone — press d to clean it up")
 	}
-	right := m.zones.Mark("pane:diff", pane(rw, bottomH, m.pane == paneDiff, gitTitle, gitBody))
+	gitPane := m.zones.Mark("pane:diff", pane(rw, gitH, m.pane == paneDiff, gitTitle, gitBody))
+
+	termTitle := "shell — " + filepath.Base(dir)
+	var termBody string
+	switch sh := m.shells[dir]; {
+	case sh == nil:
+		termBody = dimStyle.Render("tab here (or click) to open a shell in this worktree")
+	case sh.exited.Load():
+		termTitle += " · exited"
+		if m.pane == paneTerm {
+			termTitle += " — enter restarts"
+		}
+		termBody = sh.render(false)
+	default:
+		termBody = sh.render(m.pane == paneTerm)
+		if n := sh.scrolled(); n > 0 {
+			termTitle += fmt.Sprintf(" · ↑%d", n)
+		}
+	}
+	termPane := m.zones.Mark("pane:term", pane(rw, termH, m.pane == paneTerm, termTitle, termBody))
+	right := lipgloss.JoinVertical(lipgloss.Left, gitPane, termPane)
 
 	return lipgloss.JoinVertical(lipgloss.Left,
 		top,
