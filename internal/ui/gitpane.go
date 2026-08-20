@@ -40,6 +40,10 @@ func gitZoneID(staged bool, i int) string {
 	return "git:" + side + ":" + strconv.Itoa(i)
 }
 
+func gitCommitZoneID(i int) string {
+	return "git:c:" + strconv.Itoa(i)
+}
+
 type gitStatusMsg struct {
 	dir   string
 	files []gitx.FileStatus
@@ -58,6 +62,13 @@ type gitFileDiffMsg struct {
 	staged bool
 	diff   string
 	err    error
+}
+
+type gitCommitDiffMsg struct {
+	dir  string
+	rev  string
+	diff string
+	err  error
 }
 
 type gitCommitMsg struct {
@@ -180,6 +191,13 @@ func loadGitLogCmd(dir string) tea.Cmd {
 	}
 }
 
+func loadCommitDiffCmd(dir, rev string) tea.Cmd {
+	return func() tea.Msg {
+		diff, err := gitx.CommitDiff(dir, rev)
+		return gitCommitDiffMsg{dir: dir, rev: rev, diff: diff, err: err}
+	}
+}
+
 func loadFileDiffCmd(dir string, fs gitx.FileStatus, staged bool) tea.Cmd {
 	return func() tea.Msg {
 		diff, err := gitx.DiffFile(dir, fs.Path, staged, fs.Untracked && !staged)
@@ -218,6 +236,20 @@ func (m Model) gitFilesLayout(w, h int) (listH, lw int) {
 		listH = maxRows + 1
 	}
 	return listH, (w - 3) / 2
+}
+
+// gitLogLayout is log-mode geometry: the height of the commit list above the
+// rule, with the selected commit's message and patch below it. The renderer
+// and the wheel handler both need it to tell the two regions apart.
+func (m Model) gitLogLayout(h int) int {
+	listH := h / 2
+	if listH < 3 {
+		listH = 3
+	}
+	if listH > len(m.commits) {
+		listH = len(m.commits)
+	}
+	return listH
 }
 
 // clampScroll keeps an offset inside a scrollable range.
@@ -329,6 +361,110 @@ func (m *Model) moveGitSel(delta int) tea.Cmd {
 	m.gitDiffScroll = 0
 	m.revealGitSel()
 	return m.loadSelectedFileDiff()
+}
+
+// selectedCommit is the revision under the cursor in the log, "" when there
+// is none.
+func (m Model) selectedCommit() string {
+	if m.commitSel < 0 || m.commitSel >= len(m.commits) {
+		return ""
+	}
+	return m.commits[m.commitSel].Short
+}
+
+// loadSelectedCommitDiff fetches the patch for the commit under the cursor,
+// unless that patch is already on screen.
+func (m *Model) loadSelectedCommitDiff() tea.Cmd {
+	rev := m.selectedCommit()
+	if rev == "" {
+		m.commitDiff, m.commitDiffFor = "", ""
+		return nil
+	}
+	if rev == m.commitDiffFor {
+		return nil
+	}
+	m.commitDiff = ""
+	return loadCommitDiffCmd(m.gitFor, rev)
+}
+
+// commitDetail is the lower half of log mode: the selected commit's message
+// followed by the patch it introduced.
+func (m Model) commitDetail() string {
+	if m.commitSel < 0 || m.commitSel >= len(m.commits) {
+		return ""
+	}
+	c := m.commits[m.commitSel]
+	var b strings.Builder
+	b.WriteString(titleStyle.Render(c.Short) + " " + c.Subject + "\n")
+	b.WriteString(dimStyle.Render(c.Author+" · "+c.When) + "\n")
+	if c.Body != "" {
+		b.WriteString("\n" + c.Body + "\n")
+	}
+	switch {
+	case m.commitDiffFor != c.Short:
+		b.WriteString("\n" + m.spinner.View() + dimStyle.Render(" loading diff…"))
+	case strings.TrimSpace(m.commitDiff) == "":
+		b.WriteString("\n" + dimStyle.Render("(no changes)"))
+	default:
+		b.WriteString("\n" + m.commitDiff)
+	}
+	return b.String()
+}
+
+// revealCommitSel scrolls the log just far enough to show the selected
+// commit, leaving the wheel free to scroll away from it.
+func (m *Model) revealCommitSel() {
+	_, h := m.gitPaneSize()
+	rows := m.gitLogLayout(h)
+	if rows < 1 {
+		return
+	}
+	if m.commitSel < m.commitScroll {
+		m.commitScroll = m.commitSel
+	}
+	if m.commitSel >= m.commitScroll+rows {
+		m.commitScroll = m.commitSel - rows + 1
+	}
+	m.commitScroll = clampScroll(m.commitScroll, len(m.commits), rows)
+}
+
+// scrollCommitDiff moves the message-and-patch block under the log, leaving
+// the selected commit where it is.
+func (m *Model) scrollCommitDiff(delta int) {
+	_, h := m.gitPaneSize()
+	listH := m.gitLogLayout(h)
+	m.commitDiffScroll = clampScroll(m.commitDiffScroll+delta,
+		len(strings.Split(m.commitDetail(), "\n")), h-listH-1)
+}
+
+// moveCommitSel walks the log, pulling the patch below it along.
+func (m *Model) moveCommitSel(delta int) tea.Cmd {
+	i := m.commitSel + delta
+	if i < 0 || i >= len(m.commits) {
+		return nil
+	}
+	m.commitSel = i
+	m.commitDiffScroll = 0
+	m.revealCommitSel()
+	return m.loadSelectedCommitDiff()
+}
+
+// openGitLog switches the pane to the log, loading the patch it shows.
+func (m *Model) openGitLog() tea.Cmd {
+	m.gitMode = gitModeLog
+	m.commitDiffScroll = 0
+	m.revealCommitSel()
+	return m.loadSelectedCommitDiff()
+}
+
+// clickGitCommit selects a clicked log row, focusing the git pane.
+func (m Model) clickGitCommit(i int) (tea.Model, tea.Cmd) {
+	m.commitSel = i
+	m.commitDiffScroll = 0
+	m.revealCommitSel()
+	mm, cmd := m.focusPane(paneDiff)
+	model := mm.(Model)
+	return model, tea.Batch(cmd, model.loadSelectedCommitDiff())
 }
 
 func (m *Model) switchGitCol() tea.Cmd {
@@ -459,15 +595,17 @@ func (m Model) keyGit(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.gitMode = gitModeFiles
 			return m, nil
 		case "up", "k":
-			if m.commitSel > 0 {
-				m.commitSel--
-			}
-			return m, nil
+			return m, m.moveCommitSel(-1)
 		case "down", "j":
-			if m.commitSel < len(m.commits)-1 {
-				m.commitSel++
-			}
+			return m, m.moveCommitSel(1)
+		case "pgup", "shift+up", "K":
+			m.scrollCommitDiff(-5) // the patch scrolls without moving the cursor
 			return m, nil
+		case "pgdown", "shift+down", "J":
+			m.scrollCommitDiff(5)
+			return m, nil
+		case "r":
+			return m, m.reloadGit()
 		case "b":
 			m.gitMode = gitModeBranch
 			return m, nil
@@ -480,8 +618,7 @@ func (m Model) keyGit(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.gitMode = gitModeFiles
 			return m, nil
 		case "l":
-			m.gitMode = gitModeLog
-			return m, nil
+			return m, m.openGitLog()
 		}
 		var cmd tea.Cmd
 		m.diffVP, cmd = m.diffVP.Update(k)
@@ -539,8 +676,7 @@ func (m Model) keyGit(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.openHunks()
 		return m, nil
 	case "l":
-		m.gitMode = gitModeLog
-		return m, nil
+		return m, m.openGitLog()
 	case "b":
 		m.gitMode = gitModeBranch
 		return m, nil
@@ -643,34 +779,30 @@ func (m Model) gitPaneContent(w, h int) (string, string) {
 		return title, clipLines(b.String(), w, h)
 
 	case gitModeLog:
-		title := "git — log"
+		title := "git — log · ↑↓ commit · J/K scroll diff · b branch diff"
 		if len(m.commits) == 0 {
 			return title, dimStyle.Render("no commits yet")
 		}
-		listH := h / 2
-		if listH < 3 {
-			listH = 3
-		}
-		start := 0
-		if m.commitSel >= listH {
-			start = m.commitSel - listH + 1
-		}
+		listH := m.gitLogLayout(h)
 		var b strings.Builder
+		start := clampScroll(m.commitScroll, len(m.commits), listH)
 		for i := start; i < len(m.commits) && i < start+listH; i++ {
 			c := m.commits[i]
 			line := c.Short + " " + c.Subject
 			if i == m.commitSel {
-				b.WriteString(cursorStyle.Render("❯ ") + okStyle.Render(truncate(line, w-2)) + "\n")
+				line = cursorStyle.Render("❯ ") + okStyle.Render(truncate(line, w-2))
 			} else {
-				b.WriteString("  " + truncate(line, w-2) + "\n")
+				line = "  " + truncate(line, w-2)
 			}
+			b.WriteString(m.zones.Mark(gitCommitZoneID(i), line) + "\n")
 		}
 		b.WriteString(metaStyle.Render(strings.Repeat("─", w)) + "\n")
-		c := m.commits[m.commitSel]
-		b.WriteString(titleStyle.Render(c.Short) + " " + c.Subject + "\n")
-		b.WriteString(dimStyle.Render(c.Author+" · "+c.When) + "\n")
-		if c.Body != "" {
-			b.WriteString("\n" + c.Body + "\n")
+		// the message and the patch scroll together under the log
+		lines := strings.Split(m.commitDetail(), "\n")
+		off := clampScroll(m.commitDiffScroll, len(lines), h-listH-1)
+		b.WriteString(strings.Join(lines[off:], "\n"))
+		if off > 0 {
+			title += fmt.Sprintf(" · ↓%d", off)
 		}
 		return title, clipLines(b.String(), w, h)
 

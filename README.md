@@ -130,9 +130,17 @@ files.
 | `l` / `b` | commit log / branch diff vs the base |
 | `c` | commit form (`ctrl+g` drafts a message with claude) |
 
+`l` opens the commit log, which is laid out the same way: the commits on top
+and the selected one's message and patch — diffstat first — underneath. The
+wheel scrolls whichever of the two the pointer is over, `↑`/`↓` walk the
+commits, `pgup`/`pgdn` (or `shift+↑`/`shift+↓`) scroll the patch, `r`
+reloads and `b` switches to the whole branch diff. A merge is shown against
+its first parent.
+
 Drag with the mouse to select text anywhere in the pane — diff lines, file
 names, log entries — and releasing copies it to the clipboard, the same as
-in the claude and shell panes. A plain click still selects a file.
+in the claude and shell panes. A plain click still selects a file, or a
+commit in the log.
 
 ### Where worktrees live
 
