@@ -164,6 +164,12 @@ type Model struct {
 	hunkSel       int
 	commits       []gitx.Commit
 	commitSel     int
+	commitScroll  int    // log list view offset, scrolled by the wheel
+	commitDiff    string // colored patch of the selected commit
+	// commitDiffFor is the revision commitDiff was loaded for: while it
+	// lags the selection the pane shows a spinner instead of a stale patch
+	commitDiffFor    string
+	commitDiffScroll int
 
 	// commit form
 	commitSubject textinput.Model
@@ -525,6 +531,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.commitSel >= len(m.commits) {
 				m.commitSel = 0
 			}
+			m.revealCommitSel()
+			return m, m.loadSelectedCommitDiff()
 		}
 		return m, nil
 
@@ -540,6 +548,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if diff != m.gitDiff {
 			m.gitDiff, m.gitDiffScroll = diff, 0
 		}
+		return m, nil
+
+	case gitCommitDiffMsg:
+		if msg.dir != m.gitFor || m.selectedCommit() != msg.rev {
+			return m, nil // selection moved on
+		}
+		diff := msg.diff
+		if msg.err != nil {
+			diff = errStyle.Render("✗ " + msg.err.Error())
+		}
+		m.commitDiff, m.commitDiffFor, m.commitDiffScroll = diff, msg.rev, 0
 		return m, nil
 
 	case gitCommitMsg:
@@ -1938,6 +1957,8 @@ func (m *Model) syncPanes() tea.Cmd {
 		m.gitUnstaged, m.gitStaged, m.gitDiff = nil, nil, ""
 		m.gitCol, m.gitSelU, m.gitSelS = 0, 0, 0
 		m.hunks, m.commits, m.commitSel = nil, nil, 0
+		m.commitScroll, m.commitDiffScroll = 0, 0
+		m.commitDiff, m.commitDiffFor = "", ""
 		if dir != "" {
 			cmds = append(cmds, loadGitStatusCmd(dir), loadGitLogCmd(dir))
 		}
@@ -2143,11 +2164,7 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 					m.scrollGitRegion(msg, up)
 					return m, nil
 				case gitModeLog:
-					if up && m.commitSel > 0 {
-						m.commitSel--
-					} else if !up && m.commitSel < len(m.commits)-1 {
-						m.commitSel++
-					}
+					m.scrollGitLogRegion(msg, up)
 					return m, nil
 				}
 				var cmd tea.Cmd
@@ -2306,6 +2323,26 @@ func (m *Model) scrollGitRegion(msg tea.MouseMsg, up bool) {
 	}
 }
 
+// scrollGitLogRegion moves the view under the pointer in log mode: the
+// commit list a row at a time, the patch below it three lines.
+func (m *Model) scrollGitLogRegion(msg tea.MouseMsg, up bool) {
+	_, h := m.gitPaneSize()
+	listH := m.gitLogLayout(h)
+	if _, line := m.gitBodyPos(msg); line >= 0 && line < listH {
+		delta := 1
+		if up {
+			delta = -1
+		}
+		m.commitScroll = clampScroll(m.commitScroll+delta, len(m.commits), listH)
+		return
+	}
+	if up {
+		m.scrollCommitDiff(-3)
+	} else {
+		m.scrollCommitDiff(3)
+	}
+}
+
 // selectGitText runs a drag selection over the git pane's rendered text:
 // press anchors, motion extends, release copies. It reports whether it
 // consumed the event.
@@ -2386,6 +2423,13 @@ func (m Model) handleClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			case m.clicked(msg, "btn:commit-cancel"):
 				m.closeCommitForm()
 				return m, nil
+			}
+		}
+		if m.threePane() && m.gitMode == gitModeLog {
+			for i := range m.commits {
+				if m.clicked(msg, gitCommitZoneID(i)) {
+					return m.clickGitCommit(i)
+				}
 			}
 		}
 		if m.threePane() && m.gitMode == gitModeFiles {
