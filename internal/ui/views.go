@@ -223,7 +223,7 @@ func (m Model) viewPanels() string {
 	rw := w - lw
 
 	dir := m.claudeDir()
-	claudeTitle := "claude — " + filepath.Base(dir)
+	claudeTitle := "claude — " + m.paneLabel(dir)
 	var claudeBody string
 	switch s := m.terms[dir]; {
 	case s == nil:
@@ -257,7 +257,7 @@ func (m Model) viewPanels() string {
 	}
 	gitPane := m.zones.Mark("pane:diff", pane(rw, gitH, m.pane == paneDiff, gitTitle, gitBody))
 
-	termTitle := "shell — " + filepath.Base(dir)
+	termTitle := "shell — " + m.paneLabel(dir)
 	var termBody string
 	switch sh := m.shells[dir]; {
 	case sh == nil:
