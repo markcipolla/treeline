@@ -22,7 +22,9 @@ import (
 	"github.com/markcipolla/treeline/internal/ui"
 )
 
-var version = "0.2.0"
+// version is stamped by release builds (-ldflags "-X main.version=…");
+// plain `go install` builds identify as dev.
+var version = "dev"
 
 const helpText = `treeline — git worktree manager with Linear integration
 
