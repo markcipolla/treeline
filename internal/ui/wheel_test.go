@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"io"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -11,6 +12,10 @@ import (
 // the pane plumbing can be exercised without spawning claude.
 func fakeSession(dir string, cols, rows int) *claudeSession {
 	s := &claudeSession{dir: dir, em: vt.NewEmulator(cols, rows), cols: cols, rows: rows}
+	s.trackMouseModes()
+	// drain emulator replies (mouse reports, DA responses) the way the real
+	// session pumps them into the pty; unread they block on the pipe
+	go func() { _, _ = io.Copy(io.Discard, s.em) }()
 	for i := 0; i < rows*3; i++ {
 		s.em.Write([]byte("a line of output\r\n"))
 	}
@@ -102,5 +107,25 @@ func TestWheelFallsBackToFocusedPane(t *testing.T) {
 	m.Update(tea.MouseMsg{X: 0, Y: 0, Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress})
 	if claude.scrolled() == 0 {
 		t.Error("wheel outside the panels did not reach the focused claude pane")
+	}
+}
+
+// TestWheelDeclinedWithoutMouseMode: full-screen alone is not enough — a
+// program that never asked for mouse events (less, a plain vim) can't use
+// the wheel, so sendWheel must decline rather than eat the event, leaving
+// the caller free to fall back to the pane's own scrollback.
+func TestWheelDeclinedWithoutMouseMode(t *testing.T) {
+	s := fakeSession(t.TempDir(), 40, 10)
+	s.em.Write([]byte("\x1b[?1049h"))
+	if s.sendWheel(true, 5, 3) {
+		t.Error("sendWheel claimed a wheel event the program never asked for")
+	}
+	s.em.Write([]byte("\x1b[?1000h"))
+	if !s.sendWheel(true, 5, 3) {
+		t.Error("sendWheel declined after the program enabled mouse reporting")
+	}
+	s.em.Write([]byte("\x1b[?1000l"))
+	if s.sendWheel(true, 5, 3) {
+		t.Error("sendWheel kept claiming after mouse reporting was disabled")
 	}
 }

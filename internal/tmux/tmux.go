@@ -44,6 +44,10 @@ set -g prefix2 None
 set -s escape-time 10
 set -g history-limit 10000
 set -g default-terminal "screen-256color"
+# mouse on makes the client ask the pane's terminal for wheel events, which
+# is the only way scrolling can reach the history-limit lines above: the
+# client is full-screen, so the pane itself never builds any scrollback.
+set -g mouse on
 `
 
 // confFile writes conf under the cache directory once per process and
@@ -105,6 +109,10 @@ func Command(name, dir, prog string, args ...string) *exec.Cmd {
 		argv = append(argv, "-f", c)
 	}
 	argv = append(argv, "new-session", "-A", "-s", name, "-c", dir, shellCommand(prog, args))
+	// a server that outlives treeline was configured at ITS launch: re-assert
+	// the mouse option on every attach so servers started before it existed
+	// (or by an older treeline) pick it up without being killed.
+	argv = append(argv, ";", "set-option", "-g", "mouse", "on")
 	cmd := exec.Command(binary(), argv...)
 	cmd.Dir = dir
 	return cmd
