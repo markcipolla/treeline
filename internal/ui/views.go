@@ -717,6 +717,23 @@ func (m Model) tableWidth() int {
 // each row presents to them.
 func (m Model) tableGrid() ([]string, []edgeKind) {
 	lines := strings.Split(m.table.View(), "\n")
+	// the widget renders every row (fitTableHeight); show gridTop's window,
+	// padded back out to the grid's height with filler
+	if len(lines) > 2 {
+		body := lines[2:]
+		if top := m.gridTop(); top < len(body) {
+			body = body[top:]
+		} else {
+			body = nil
+		}
+		if len(body) > m.gridBody {
+			body = body[:m.gridBody]
+		}
+		for len(body) < m.gridBody {
+			body = append(body, "")
+		}
+		lines = append(lines[:2:2], body...)
+	}
 	edges := make([]edgeKind, len(lines))
 	chrome := m.gridChrome()
 	tintedDivider := chrome.Render("│")
@@ -788,7 +805,9 @@ func (m Model) renderTable() string {
 		b.WriteString(metaStyle.Render(left) + row + metaStyle.Render(right) + "\n")
 	}
 	b.WriteString(m.tableFrame('└', '┴', '┘'))
-	return b.String()
+	// marked for the mouse like the panel layout's pane, so a click can
+	// land on a card here too
+	return m.zones.Mark("pane:issues", b.String())
 }
 
 // issuesPart is the issues list as a pane: the grid is the pane, its own

@@ -82,6 +82,10 @@ type Model struct {
 	// the one table: issues grouped by status, worktrees inline
 	table table.Model
 	refs  []rowRef
+	// gridBody is how many rows the grid has room to show. The window over
+	// them is gridTop's: the widget scrolls with an offset it never exposes,
+	// which left the mouse unable to name the row under the pointer.
+	gridBody int
 
 	wts    []gitx.Worktree
 	issues []linear.Issue
@@ -989,12 +993,44 @@ func (m *Model) setTableLayout(w, h int) {
 		m.refreshRows()
 	}
 	m.table.SetWidth(w)
-	// renderTable adds a top and bottom frame line around the widget
-	rows := h - 2
-	if rows < 1 {
-		rows = 1 // a strip this short is collapsed to a single line anyway
+	// the frame around the grid and the header with its rule inside it
+	m.gridBody = h - 4
+	if m.gridBody < 1 {
+		m.gridBody = 1 // a strip this short is collapsed to a single line anyway
 	}
-	m.table.SetHeight(rows)
+	m.fitTableHeight()
+}
+
+// fitTableHeight keeps the widget tall enough to render every row at once.
+// Left to scroll on its own, the table clips to a viewport offset it never
+// exposes — the mouse couldn't tell which row a click landed on, and a cursor
+// moved by SetCursor could slip below the fold. Instead the widget renders
+// everything and tableGrid shows the gridTop window.
+func (m *Model) fitTableHeight() {
+	n := len(m.table.Rows())
+	if n < 1 {
+		n = 1
+	}
+	// SetHeight measures the header and its rule out of what it is given
+	m.table.SetHeight(n + 2)
+}
+
+// gridTop is the first row of the window the grid shows: the cursor row sits
+// mid-window, pinned at the list's ends. A pure function of the cursor, so
+// the mouse handlers recompute exactly what the last render showed.
+func (m Model) gridTop() int {
+	n, h := len(m.refs), m.gridBody
+	if h <= 0 || n <= h {
+		return 0
+	}
+	top := m.table.Cursor() - h/2
+	if lim := n - h; top > lim {
+		top = lim
+	}
+	if top < 0 {
+		top = 0
+	}
+	return top
 }
 
 // refreshRows rebuilds the table: issues grouped by status (active work
@@ -1125,6 +1161,7 @@ func (m *Model) refreshRows() {
 	want := m.selectedRef().keys()
 	m.refs = refs
 	m.table.SetRows(rows)
+	m.fitTableHeight()
 	if len(want) > 0 {
 		// the rows moved (cards loaded, a filter changed): follow the
 		// selection rather than letting the index point at a new row
@@ -1766,11 +1803,33 @@ func (m Model) keyMain(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	var cmd tea.Cmd
-	m.table, cmd = m.table.Update(k)
-	ks := k.String()
-	m.settleCursor(ks == "up" || ks == "k" || ks == "pgup" || ks == "home")
-	return m, tea.Batch(cmd, m.syncPanes())
+	// the cursor moves through moveCards, never the widget's own keymap:
+	// its paging scrolls the hidden viewport offset fitTableHeight retired
+	page := m.gridBody
+	if page < 1 {
+		page = 1
+	}
+	switch k.String() {
+	case "up", "k":
+		m.moveCards(-1)
+	case "down", "j":
+		m.moveCards(1)
+	case "pgup", "b":
+		m.moveCards(-page)
+	case "pgdown", "f", " ":
+		m.moveCards(page)
+	case "u", "ctrl+u":
+		m.moveCards(-(page + 1) / 2)
+	case "ctrl+d":
+		m.moveCards((page + 1) / 2)
+	case "home":
+		m.table.SetCursor(0)
+		m.settleCursor(false)
+	case "end", "G":
+		m.table.SetCursor(len(m.refs) - 1)
+		m.settleCursor(true)
+	}
+	return m, m.syncPanes()
 }
 
 // ---- three-panel plumbing ----
@@ -2434,6 +2493,31 @@ func (m Model) clicked(msg tea.MouseMsg, id string) bool {
 	return z != nil && !z.IsZero() && z.InBounds(msg)
 }
 
+// rowUnderMouse maps a click in the issues grid to the index of the row under
+// the pointer, or -1 for anything that isn't a card: the pane's chrome, a
+// group header, the filler below the list.
+func (m Model) rowUnderMouse(msg tea.MouseMsg) int {
+	z := m.zones.Get("pane:issues")
+	if z == nil || z.IsZero() || !z.InBounds(msg) {
+		return -1
+	}
+	if m.threePane() && !m.columnLayout() && m.pane != paneIssues {
+		return -1 // the collapsed strip shows no rows to hit
+	}
+	// above the cards: the pane title and its rule in the panel layout, the
+	// frame's top edge in the narrow one, then the header and its rule
+	head := 3
+	if m.threePane() {
+		head = 4
+	}
+	_, y := z.Pos(msg)
+	i := m.gridTop() + y - head
+	if y < head || i >= len(m.refs) || m.refs[i].kind == rowHeader {
+		return -1
+	}
+	return i
+}
+
 func (m Model) handleClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	m.err = nil
 	switch m.screen {
@@ -2448,7 +2532,14 @@ func (m Model) handleClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		case m.clicked(msg, "btn:settings"):
 			return m.openSettings()
 		case m.clicked(msg, "pane:issues"):
-			return m.focusPane(paneIssues)
+			// a click on a card selects it before the pane takes focus,
+			// so the work panes swing to the worktree that was hit
+			if i := m.rowUnderMouse(msg); i >= 0 {
+				m.table.SetCursor(i)
+			}
+			sync := m.syncPanes()
+			mdl, cmd := m.focusPane(paneIssues)
+			return mdl, tea.Batch(sync, cmd)
 		}
 		if m.threePane() && m.gitMode == gitModeCommit {
 			switch {
