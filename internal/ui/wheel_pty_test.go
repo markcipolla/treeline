@@ -29,6 +29,7 @@ func paneWith(t *testing.T, script string) *claudeSession {
 	em := vt.NewEmulator(40, 10)
 	em.SetScrollbackSize(500)
 	s := &claudeSession{dir: t.TempDir(), cmd: cmd, pty: p, em: em, cols: 40, rows: 10, notify: make(chan struct{}, 1)}
+	s.trackMouseModes()
 	go func() {
 		buf := make([]byte, 4096)
 		for {

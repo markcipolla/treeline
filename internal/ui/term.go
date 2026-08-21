@@ -14,6 +14,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/vt"
 	"github.com/creack/pty"
 
@@ -40,6 +41,11 @@ type claudeSession struct {
 	scroll   int // lines scrolled up into history; 0 = live
 	notify   chan struct{}
 	exited   atomic.Bool
+
+	// mouseModes is a bitmask of the mouse-reporting modes the program has
+	// enabled, maintained by emulator callbacks. Atomic rather than under mu
+	// because the callbacks fire inside em.Write, while mu is already held.
+	mouseModes atomic.Int32
 
 	// mouse selection, in absolute coordinates: line < scrollback length is
 	// history, line >= is the live screen (index - sbLen)
@@ -109,6 +115,7 @@ func startProgramSession(dir string, cols, rows int, persist bool, kind, name st
 		rows:     rows,
 		notify:   make(chan struct{}, 1),
 	}
+	s.trackMouseModes()
 	// pty → emulator
 	go func() {
 		buf := make([]byte, 8192)
@@ -194,17 +201,54 @@ func (s *claudeSession) scrollBy(delta int) int {
 	return s.scroll
 }
 
+// mouseModeBit maps a mouse-reporting mode to its slot in mouseModes, 0 for
+// every other mode. The list matches the ones SendMouse honours.
+func mouseModeBit(mode ansi.Mode) int32 {
+	switch mode {
+	case ansi.ModeMouseX10:
+		return 1 << 0
+	case ansi.ModeMouseNormal:
+		return 1 << 1
+	case ansi.ModeMouseHighlight:
+		return 1 << 2
+	case ansi.ModeMouseButtonEvent:
+		return 1 << 3
+	case ansi.ModeMouseAnyEvent:
+		return 1 << 4
+	}
+	return 0
+}
+
+// trackMouseModes keeps mouseModes mirroring the mouse-reporting modes the
+// program in the pane has switched on, so sendWheel can tell whether a mouse
+// event has anywhere to go.
+func (s *claudeSession) trackMouseModes() {
+	s.em.SetCallbacks(vt.Callbacks{
+		EnableMode: func(mode ansi.Mode) {
+			if b := mouseModeBit(mode); b != 0 {
+				s.mouseModes.Or(b)
+			}
+		},
+		DisableMode: func(mode ansi.Mode) {
+			if b := mouseModeBit(mode); b != 0 {
+				s.mouseModes.And(^b)
+			}
+		},
+	})
+}
+
 // sendWheel hands a wheel event to the program running in the pane, encoded
 // the way the terminal would send it. A full-screen program repaints in place
 // rather than letting lines scroll off the top, so it builds no scrollback of
 // ours to move — the scrolling has to be its own. Reports whether the event
-// was the program's to handle; SendMouse is itself a no-op when the program
-// never asked for mouse events, and then the wheel simply does nothing, which
-// is all an empty scrollback could have offered anyway.
+// was the program's to handle: full-screen AND asking for mouse events. A
+// full-screen program that never asked (less, a plain vim) gets nothing
+// forwarded, and declining lets the caller fall back to our scrollback
+// rather than eating the event.
 func (s *claudeSession) sendWheel(up bool, x, y int) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.em.IsAltScreen() {
+	if !s.em.IsAltScreen() || s.mouseModes.Load() == 0 {
 		return false
 	}
 	btn := vt.MouseWheelDown
