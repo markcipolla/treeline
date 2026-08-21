@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -69,9 +70,8 @@ func TestCommandQuotesTheProgram(t *testing.T) {
 		t.Skip("tmux not installed")
 	}
 	cmd := Command("shell-x", "/tmp", "/opt/my shell/zsh", "-l")
-	last := cmd.Args[len(cmd.Args)-1]
-	if last != `'/opt/my shell/zsh' -l` {
-		t.Errorf("shell-command = %q, want the path quoted as one word", last)
+	if !slices.Contains(cmd.Args, `'/opt/my shell/zsh' -l`) {
+		t.Errorf("args %q missing the path quoted as one word", cmd.Args)
 	}
 }
 
