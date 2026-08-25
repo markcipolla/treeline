@@ -48,7 +48,8 @@ func TestWheelScrollsPaneUnderPointer(t *testing.T) {
 	}
 	dir := m.claudeDir()
 	claude, shell := fakeSession(dir, 40, 10), fakeSession(dir, 40, 10)
-	m.terms[dir], m.shells[dir] = claude, shell
+	m.terms[dir] = claude
+	m.termTabs[dir] = []*termTab{{kind: "shell", sess: shell}}
 
 	// focus stays on the issues list the whole time
 	if m.pane != paneIssues {

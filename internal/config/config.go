@@ -42,6 +42,10 @@ type RepoConfig struct {
 	Path    string `json:"path"`
 	Setup   string `json:"setup,omitempty"`
 	Cleanup string `json:"cleanup,omitempty"`
+	// SetupPane runs Setup in a visible pane beside the others instead of
+	// in the background, so a script that starts a dev server has somewhere
+	// to keep running.
+	SetupPane bool `json:"setup_pane,omitempty"`
 }
 
 // UnmarshalJSON accepts both the current object form and the legacy plain

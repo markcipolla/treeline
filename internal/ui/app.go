@@ -49,11 +49,12 @@ const (
 
 // repoEntry is a repository treeline operates on.
 type repoEntry struct {
-	name    string
-	path    string
-	base    string // ref new branches start from
-	setup   string // sh -c hook after worktree creation
-	cleanup string // sh -c hook before worktree removal
+	name      string
+	path      string
+	base      string // ref new branches start from
+	setup     string // sh -c hook after worktree creation
+	cleanup   string // sh -c hook before worktree removal
+	setupPane bool   // run setup in a tab of the shell pane, not headless
 }
 
 type Model struct {
@@ -71,6 +72,7 @@ type Model struct {
 	settingsIdx int
 	setName     string             // entry being edited; "" = adding
 	setInputs   [4]textinput.Model // name, path, setup, cleanup
+	setPaneOn   bool               // "show setup in a pane" checkbox
 	setFocus    int
 
 	zones *zone.Manager
@@ -135,9 +137,13 @@ type Model struct {
 	searchedFor   string // query the current results answer; "" = none yet
 
 	// panel main screen (wide terminals): 0 issues, 1 claude, 2 git, 3 shell
-	pane   int
-	terms  map[string]*claudeSession // interactive claude per directory
-	shells map[string]*claudeSession // shell per directory
+	pane  int
+	terms map[string]*claudeSession // interactive claude per directory
+	// the shell pane is tabbed: the shell itself, the repo's setup script
+	// when it runs there, and any extra shells opened with ctrl+t
+	termTabs    map[string][]*termTab // tabs per directory
+	termSel     map[string]int        // active tab per directory
+	termScanned map[string]bool       // dirs checked for persisted extra tabs
 
 	diffVP      viewport.Model
 	diffRaw     string
@@ -284,7 +290,9 @@ func New(cfg *config.Config, root string) Model {
 		commitSubject: commitSubject,
 		commitBody:    commitBody,
 		terms:         map[string]*claudeSession{},
-		shells:        map[string]*claudeSession{},
+		termTabs:      map[string][]*termTab{},
+		termSel:       map[string]int{},
+		termScanned:   map[string]bool{},
 		diffVP:        viewport.New(0, 0),
 		viewport:      viewport.New(0, 0),
 		help:          help.New(),
@@ -312,6 +320,7 @@ func buildRepos(cfg *config.Config, root string) []repoEntry {
 		rc := cfg.Repos[n]
 		if rc.Path == root {
 			repos[0].name, repos[0].setup, repos[0].cleanup = n, rc.Setup, rc.Cleanup
+			repos[0].setupPane = rc.SetupPane
 			continue
 		}
 		if _, err := gitx.RepoRoot(rc.Path); err != nil {
@@ -319,7 +328,7 @@ func buildRepos(cfg *config.Config, root string) []repoEntry {
 		}
 		repos = append(repos, repoEntry{
 			name: n, path: rc.Path, base: gitx.DefaultBase(rc.Path),
-			setup: rc.Setup, cleanup: rc.Cleanup,
+			setup: rc.Setup, cleanup: rc.Cleanup, setupPane: rc.SetupPane,
 		})
 	}
 	return repos
@@ -390,8 +399,12 @@ func (m Model) Close() {
 	for _, s := range m.terms {
 		s.close()
 	}
-	for _, s := range m.shells {
-		s.close()
+	for _, tabs := range m.termTabs {
+		for _, t := range tabs {
+			if t.sess != nil {
+				t.sess.close()
+			}
+		}
 	}
 }
 
@@ -595,9 +608,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.setDiffContent()
 		return m, nil
 
+	case tabsFoundMsg:
+		tabs := m.termTabs[msg.dir]
+		if len(tabs) == 0 {
+			return m, nil // the pane moved on before the scan came back
+		}
+		for _, k := range msg.kinds {
+			if findTab(tabs, k) == nil {
+				tabs = append(tabs, &termTab{kind: k})
+			}
+		}
+		m.termTabs[msg.dir] = tabs
+		return m, nil
+
 	case claudeTermMsg:
 		s := msg.s
-		if m.terms[s.dir] != s && m.shells[s.dir] != s {
+		if m.terms[s.dir] != s && !m.ownsTermTab(s) {
 			return m, nil // session was replaced or closed
 		}
 		cmds := []tea.Cmd{waitClaudeTerm(s)} // re-arm; the view reads the vt directly
@@ -652,9 +678,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loadingWT = true
 		cmds := []tea.Cmd{m.loadWorktrees()}
 		if repo := m.repoFor(msg.root); repo.setup != "" {
-			m.setupBusy = true
-			cmds = append(cmds, runSetupCmd(repo.setup, msg.path,
-				scriptEnv(repo.name, msg.path, msg.branchName, m.pendKey)))
+			if repo.setupPane {
+				// the script runs in the shell pane's setup tab, where it
+				// can be watched — and where a server it starts keeps going
+				cmds = append(cmds, m.startSetupTab(msg.path, repo, msg.branchName, m.pendKey))
+			} else {
+				m.setupBusy = true
+				cmds = append(cmds, runSetupCmd(repo.setup, msg.path,
+					scriptEnv(repo.name, msg.path, msg.branchName, m.pendKey)))
+			}
 		}
 		return m, tea.Batch(cmds...)
 
@@ -803,8 +835,12 @@ func (m *Model) resize() {
 		for _, t := range m.terms {
 			t.resize(l.claude.w-3, l.claude.h-4)
 		}
-		for _, t := range m.shells {
-			t.resize(l.term.w-3, l.term.h-4)
+		for _, tabs := range m.termTabs {
+			for _, t := range tabs {
+				if t.sess != nil {
+					t.sess.resize(l.term.w-3, l.term.h-4)
+				}
+			}
 		}
 		m.diffVP.Width = l.git.w - 2
 		m.diffVP.Height = l.git.h - 4
@@ -1514,15 +1550,24 @@ func (m Model) dropSessions(dir string) {
 		// treeline, and about to be orphaned in a deleted directory
 		tmux.KillDir(dir)
 	}
-	for _, set := range []map[string]*claudeSession{m.terms, m.shells} {
-		if s := set[dir]; s != nil {
-			if s.tmuxName != "" {
-				_ = tmux.Kill(s.tmuxName)
+	if s := m.terms[dir]; s != nil {
+		if s.tmuxName != "" {
+			_ = tmux.Kill(s.tmuxName)
+		}
+		s.close()
+		delete(m.terms, dir)
+	}
+	for _, t := range m.termTabs[dir] {
+		if t.sess != nil {
+			if t.sess.tmuxName != "" {
+				_ = tmux.Kill(t.sess.tmuxName)
 			}
-			s.close()
-			delete(set, dir)
+			t.sess.close()
 		}
 	}
+	delete(m.termTabs, dir)
+	delete(m.termSel, dir)
+	delete(m.termScanned, dir)
 }
 
 func (m Model) startAuth() (tea.Model, tea.Cmd) {
@@ -1869,7 +1914,12 @@ func (m Model) focusPane(p int) (tea.Model, tea.Cmd) {
 		return m, m.ensureTerm()
 	}
 	if p == paneTerm {
-		return m, m.ensureShell()
+		cmds := []tea.Cmd{m.ensureTermTab()}
+		if dir := m.claudeDir(); dir != "" && m.cfg.Persist() && !m.termScanned[dir] {
+			m.termScanned[dir] = true
+			cmds = append(cmds, discoverTermTabsCmd(dir))
+		}
+		return m, tea.Batch(cmds...)
 	}
 	if p == paneDiff {
 		m.gitFreshAt = time.Now()
@@ -1914,27 +1964,260 @@ func (m Model) shellSize() (cols, rows int) {
 	return b.w - 3, b.h - 4
 }
 
-// ensureShell starts (or reattaches) the shell for the selected worktree.
-func (m *Model) ensureShell() tea.Cmd {
+// termTab is one tab of the shell pane: the shell itself, the repo's setup
+// script, or an extra shell. kind doubles as the tmux session kind, so every
+// tab persists on its own.
+type termTab struct {
+	kind string // "shell", "setup", "shell2" … "shell9"
+	sess *claudeSession
+}
+
+func findTab(tabs []*termTab, kind string) *termTab {
+	for _, t := range tabs {
+		if t.kind == kind {
+			return t
+		}
+	}
+	return nil
+}
+
+// termTabsFor returns dir's tabs, materializing the base set on first use —
+// the shell, plus the setup script when the repo shows it here — and keeping
+// the setup tab in step with the settings checkbox.
+func (m Model) termTabsFor(dir string) []*termTab {
+	tabs := m.termTabs[dir]
+	if len(tabs) == 0 {
+		tabs = []*termTab{{kind: "shell"}}
+	}
+	_, wantSetup := m.setupRepo()
+	if t := findTab(tabs, "setup"); wantSetup && t == nil {
+		// setup leads the row: setup │ shell │ shell │ +
+		tabs = append([]*termTab{{kind: "setup"}}, tabs...)
+	} else if !wantSetup && t != nil && t.sess == nil {
+		// checkbox turned off and nothing running: the tab goes again
+		for i, tab := range tabs {
+			if tab == t {
+				tabs = append(tabs[:i:i], tabs[i+1:]...)
+				break
+			}
+		}
+	}
+	m.termTabs[dir] = tabs
+	return tabs
+}
+
+// activeTermTab is the shell pane's selected tab for dir, nil without one.
+func (m Model) activeTermTab(dir string) *termTab {
+	if dir == "" {
+		return nil
+	}
+	tabs := m.termTabsFor(dir)
+	sel := m.termSel[dir]
+	if sel < 0 || sel >= len(tabs) {
+		sel = 0
+	}
+	return tabs[sel]
+}
+
+// termSession is the active tab's embedded terminal, nil until started.
+func (m Model) termSession(dir string) *claudeSession {
+	if t := m.activeTermTab(dir); t != nil {
+		return t.sess
+	}
+	return nil
+}
+
+// ownsTermTab reports whether a session is (still) one of the shell pane's
+// tabs, so stale output notifications can be dropped.
+func (m Model) ownsTermTab(s *claudeSession) bool {
+	for _, t := range m.termTabs[s.dir] {
+		if t.sess == s {
+			return true
+		}
+	}
+	return false
+}
+
+// setupRepo is the repo whose setup script would run in the shell pane's
+// setup tab for the selected worktree, and whether that tab is wanted.
+func (m Model) setupRepo() (repoEntry, bool) {
 	dir := m.claudeDir()
-	if dir == "" || m.shells[dir] != nil {
+	if dir == "" {
+		return repoEntry{}, false
+	}
+	if m.pendSelect == dir {
+		r := m.pendRepo
+		return r, r.setup != "" && r.setupPane
+	}
+	if ref := m.selectedRef(); ref.wt != nil && ref.wt.Path == dir {
+		r := m.repoFor(ref.wt.Root)
+		return r, r.setup != "" && r.setupPane
+	}
+	return repoEntry{}, false
+}
+
+// ensureTermTab starts (or reattaches) the active tab's session for the
+// selected worktree: the shell for shell tabs, the setup script for the
+// setup tab. A persisted session that is still running is attached, not
+// started over.
+func (m *Model) ensureTermTab() tea.Cmd {
+	dir := m.claudeDir()
+	if dir == "" {
+		return nil
+	}
+	t := m.activeTermTab(dir)
+	if t == nil || t.sess != nil {
 		return nil
 	}
 	cols, rows := m.shellSize()
-	s, err := startShell(dir, cols, rows, m.cfg.Persist())
+	var (
+		s   *claudeSession
+		err error
+	)
+	if t.kind == "setup" {
+		repo, ok := m.setupRepo()
+		if !ok {
+			return nil
+		}
+		branch, issue := m.createdBranch, m.pendKey
+		if ref := m.selectedRef(); ref.wt != nil && ref.wt.Path == dir {
+			branch = ref.wt.Branch
+			issue = issueKeyFromBranch(branch)
+		}
+		s, err = startSetup(dir, cols, rows, m.cfg.Persist(), repo.setup,
+			scriptEnv(repo.name, dir, branch, issue))
+	} else {
+		s, err = startShell(dir, cols, rows, m.cfg.Persist(), t.kind)
+	}
 	if err != nil {
 		m.err = err
 		return nil
 	}
-	m.shells[dir] = s
+	t.sess = s
 	return waitClaudeTerm(s)
+}
+
+// startSetupTab launches the setup script in the shell pane's setup tab the
+// moment a worktree is created, and brings the tab to the front.
+func (m *Model) startSetupTab(dir string, repo repoEntry, branch, issue string) tea.Cmd {
+	tabs := m.termTabs[dir]
+	if len(tabs) == 0 {
+		tabs = []*termTab{{kind: "shell"}}
+	}
+	t := findTab(tabs, "setup")
+	if t == nil {
+		t = &termTab{kind: "setup"}
+		tabs = append([]*termTab{t}, tabs...)
+	}
+	m.termTabs[dir] = tabs
+	for i, tab := range tabs {
+		if tab == t {
+			m.termSel[dir] = i
+		}
+	}
+	if t.sess != nil {
+		return nil
+	}
+	cols, rows := m.shellSize()
+	s, err := startSetup(dir, cols, rows, m.cfg.Persist(), repo.setup,
+		scriptEnv(repo.name, dir, branch, issue))
+	if err != nil {
+		m.err = err
+		return nil
+	}
+	t.sess = s
+	return waitClaudeTerm(s)
+}
+
+// switchTermTab moves the active tab by delta, starting its session if the
+// tab has none yet.
+func (m *Model) switchTermTab(dir string, delta int) tea.Cmd {
+	tabs := m.termTabsFor(dir)
+	n := len(tabs)
+	if n < 2 {
+		return nil
+	}
+	sel := m.termSel[dir]
+	if sel < 0 || sel >= n {
+		sel = 0
+	}
+	m.termSel[dir] = ((sel+delta)%n + n) % n
+	return m.ensureTermTab()
+}
+
+// addTermTab opens another shell tab, numbered so each one persists as a
+// tmux session of its own.
+func (m *Model) addTermTab(dir string) tea.Cmd {
+	tabs := m.termTabsFor(dir)
+	n := 2
+	for findTab(tabs, fmt.Sprintf("shell%d", n)) != nil {
+		n++
+	}
+	if n > 9 {
+		return nil // enough shells for one worktree
+	}
+	tabs = append(tabs, &termTab{kind: fmt.Sprintf("shell%d", n)})
+	m.termTabs[dir] = tabs
+	m.termSel[dir] = len(tabs) - 1
+	return m.ensureTermTab()
+}
+
+// closeTermTab gives an extra shell's tab back once its shell has exited.
+func (m *Model) closeTermTab(dir string, t *termTab) {
+	tabs := m.termTabs[dir]
+	for i, tab := range tabs {
+		if tab != t {
+			continue
+		}
+		if tab.sess != nil {
+			if tab.sess.tmuxName != "" {
+				_ = tmux.Kill(tab.sess.tmuxName)
+			}
+			tab.sess.close()
+		}
+		m.termTabs[dir] = append(tabs[:i:i], tabs[i+1:]...)
+		if sel := m.termSel[dir]; sel >= i && sel > 0 {
+			m.termSel[dir] = sel - 1
+		}
+		return
+	}
+}
+
+// tabsFoundMsg reports extra shell sessions a previous run left on the tmux
+// server, so their tabs come back.
+type tabsFoundMsg struct {
+	dir   string
+	kinds []string
+}
+
+// discoverTermTabsCmd checks the tmux server for this directory's numbered
+// shell sessions, once per directory per run.
+func discoverTermTabsCmd(dir string) tea.Cmd {
+	return func() tea.Msg {
+		sessions, err := tmux.List()
+		if err != nil || len(sessions) == 0 {
+			return tabsFoundMsg{dir: dir}
+		}
+		names := map[string]bool{}
+		for _, s := range sessions {
+			names[s.Name] = true
+		}
+		var kinds []string
+		for n := 2; n <= 9; n++ {
+			k := fmt.Sprintf("shell%d", n)
+			if names[tmux.Name(k, dir)] {
+				kinds = append(kinds, k)
+			}
+		}
+		return tabsFoundMsg{dir: dir, kinds: kinds}
+	}
 }
 
 // paneSession maps an embedded-terminal pane to its session for the
 // selected directory.
 func (m Model) paneSession(pane int) *claudeSession {
 	if pane == paneTerm {
-		return m.shells[m.claudeDir()]
+		return m.termSession(m.claudeDir())
 	}
 	return m.terms[m.claudeDir()]
 }
@@ -1947,21 +2230,37 @@ func (m Model) keyShell(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if dir == "" {
 		return m.focusPane(paneIssues) // the worktree went away under us
 	}
-	s := m.shells[dir]
-	if s == nil {
-		return m, m.ensureShell()
+	// tab chords: ctrl+←/→ were dead keys here (encodeKey drops them), and
+	// ctrl+t is worth its readline meaning for a browser-familiar new tab
+	switch k.String() {
+	case "ctrl+right":
+		return m, m.switchTermTab(dir, 1)
+	case "ctrl+left":
+		return m, m.switchTermTab(dir, -1)
+	case "ctrl+t":
+		return m, m.addTermTab(dir)
 	}
-	if s.exited.Load() {
-		if k.String() == "enter" { // restart in place
-			delete(m.shells, dir)
-			return m, m.ensureShell()
+	t := m.activeTermTab(dir)
+	if t.sess == nil {
+		return m, m.ensureTermTab()
+	}
+	if t.sess.exited.Load() {
+		switch k.String() {
+		case "enter": // restart in place; for the setup tab, rerun the script
+			t.sess = nil
+			return m, m.ensureTermTab()
+		case "x": // an extra shell that is done can give its tab back
+			if t.kind != "shell" && t.kind != "setup" {
+				m.closeTermTab(dir, t)
+			}
+			return m, nil
 		}
 		return m, nil
 	}
 	if b := encodeKey(k); len(b) > 0 {
-		s.scrollLive()
-		s.clearSel()
-		s.pty.Write(b)
+		t.sess.scrollLive()
+		t.sess.clearSel()
+		t.sess.pty.Write(b)
 	}
 	return m, nil
 }
@@ -2267,7 +2566,7 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				return m, cmd
 			}
 			s, z := m.terms[m.claudeDir()], m.zones.Get("pane:claude")
-			if sh, zt := m.shells[m.claudeDir()], m.zones.Get("pane:term"); sh != nil && (sh.selecting() || (zt != nil && !zt.IsZero() && zt.InBounds(msg))) {
+			if sh, zt := m.termSession(m.claudeDir()), m.zones.Get("pane:term"); sh != nil && (sh.selecting() || (zt != nil && !zt.IsZero() && zt.InBounds(msg))) {
 				s, z = sh, zt
 			}
 			if s != nil {
@@ -2488,6 +2787,25 @@ func (m *Model) selectGitText(msg tea.MouseMsg) (bool, tea.Cmd) {
 	return false, nil
 }
 
+// clickTermTab handles a click on the shell pane's tab row: it switches to
+// the tab under the pointer, or opens a new shell on the +.
+func (m *Model) clickTermTab(msg tea.MouseMsg) (tea.Cmd, bool) {
+	dir := m.claudeDir()
+	if dir == "" {
+		return nil, false
+	}
+	if m.clicked(msg, "termtab:new") {
+		return m.addTermTab(dir), true
+	}
+	for i := range m.termTabsFor(dir) {
+		if m.clicked(msg, termTabZoneID(i)) {
+			m.termSel[dir] = i
+			return m.ensureTermTab(), true
+		}
+	}
+	return nil, false
+}
+
 func (m Model) clicked(msg tea.MouseMsg, id string) bool {
 	z := m.zones.Get(id)
 	return z != nil && !z.IsZero() && z.InBounds(msg)
@@ -2591,7 +2909,11 @@ func (m Model) handleClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		case m.clicked(msg, "pane:diff"):
 			return m.focusPane(paneDiff)
 		case m.clicked(msg, "pane:term"):
-			if s := m.shells[m.claudeDir()]; s != nil {
+			if cmd, ok := m.clickTermTab(msg); ok {
+				mm, fcmd := m.focusPane(paneTerm)
+				return mm, tea.Batch(cmd, fcmd)
+			}
+			if s := m.termSession(m.claudeDir()); s != nil {
 				z := m.zones.Get("pane:term")
 				x, y := z.Pos(msg)
 				if url := s.urlAt(x-1, y-2); url != "" {

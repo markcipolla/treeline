@@ -192,14 +192,26 @@ func Kill(name string) error {
 	return err
 }
 
-// KillDir ends the sessions belonging to a directory, for when the worktree
-// itself is being removed. Best-effort: a session that was never started is
-// not an error.
+// KillDir ends the sessions belonging to a directory, whatever their kind,
+// for when the worktree itself is being removed. Sessions are matched by the
+// path digest their names end with, which is what catches the numbered shell
+// tabs (shell2, …) alongside the fixed kinds. Best-effort: a session that was
+// never started is not an error.
 func KillDir(dir string) {
 	if !Available() {
 		return
 	}
-	for _, kind := range []string{"claude", "shell"} {
+	sum := sha256.Sum256([]byte(dir))
+	suffix := "-" + hex.EncodeToString(sum[:4])
+	if sessions, err := List(); err == nil {
+		for _, s := range sessions {
+			if strings.HasSuffix(s.Name, suffix) {
+				_ = Kill(s.Name)
+			}
+		}
+		return
+	}
+	for _, kind := range []string{"claude", "shell", "setup"} {
 		_ = Kill(Name(kind, dir))
 	}
 }

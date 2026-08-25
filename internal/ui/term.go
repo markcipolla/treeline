@@ -66,12 +66,22 @@ var (
 	startTerm = func(dir string, cols, rows int, persist bool) (*claudeSession, error) {
 		return startProgramSession(dir, cols, rows, persist, "claude", "claude")
 	}
-	startShell = func(dir string, cols, rows int, persist bool) (*claudeSession, error) {
+	// kind names the tab ("shell", "shell2", …) so every extra shell tab
+	// persists as a tmux session of its own.
+	startShell = func(dir string, cols, rows int, persist bool, kind string) (*claudeSession, error) {
 		sh := os.Getenv("SHELL")
 		if sh == "" {
 			sh = "/bin/zsh"
 		}
-		return startProgramSession(dir, cols, rows, persist, "shell", sh)
+		return startProgramSession(dir, cols, rows, persist, kind, sh)
+	}
+	// startSetup runs a repo's setup script where it can be watched — and,
+	// when it starts a server, where that server can keep running. Going
+	// through env(1) carries the TREELINE_* variables into the script on
+	// both the direct-pty and the tmux path.
+	startSetup = func(dir string, cols, rows int, persist bool, script string, env []string) (*claudeSession, error) {
+		args := append(append([]string{}, env...), "sh", "-c", script)
+		return startProgramSession(dir, cols, rows, persist, "setup", "env", args...)
 	}
 )
 
@@ -179,10 +189,12 @@ func (s *claudeSession) resize(cols, rows int) {
 // (Killing our own client rather than asking tmux to detach-client keeps a
 // second treeline attached to the same worktree undisturbed.)
 func (s *claudeSession) close() {
-	if s.cmd.Process != nil {
+	if s.cmd != nil && s.cmd.Process != nil {
 		_ = s.cmd.Process.Kill()
 	}
-	_ = s.pty.Close()
+	if s.pty != nil {
+		_ = s.pty.Close()
+	}
 	_ = s.em.Close()
 }
 
