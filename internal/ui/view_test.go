@@ -19,7 +19,9 @@ func TestViewSmoke(t *testing.T) {
 	startTerm = func(dir string, cols, rows int, persist bool) (*claudeSession, error) {
 		return nil, errors.New("claude sessions disabled in tests")
 	}
-	startShell = startTerm
+	startShell = func(dir string, cols, rows int, persist bool, kind string) (*claudeSession, error) {
+		return startTerm(dir, cols, rows, persist)
+	}
 
 	cfg := &config.Config{BranchTypes: []string{"feature", "bugfix"}, SlugMaxLen: 48}
 	for _, size := range [][2]int{{40, 10}, {80, 24}, {110, 30}, {180, 40}, {200, 60}, {260, 60}} {

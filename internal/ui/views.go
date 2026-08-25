@@ -183,8 +183,10 @@ func (m Model) viewMain() string {
 	if m.threePane() {
 		bindings = append([]key.Binding{keyPane}, bindings...)
 		switch m.pane {
-		case paneClaude, paneTerm:
+		case paneClaude:
 			bindings = []key.Binding{keyTermEsc}
+		case paneTerm:
+			bindings = []key.Binding{keyTermTabs, keyTermEsc}
 		case paneDiff:
 			bindings = []key.Binding{keyChoose, keyStage, keyHunks, keyCommitC, keyLog, keyBranchD, keyBack}
 			if m.gitMode == gitModeCommit {
@@ -275,26 +277,45 @@ func (m Model) viewPanels() string {
 	git := m.mark("pane:diff",
 		m.workPart(l.git, m.pane == paneDiff, gitTitle, gitBody))
 
-	termTitle := "shell"
-	if !noWT {
-		termTitle += " — " + m.paneLabel(dir)
-	}
-	var termBody string
-	switch sh := m.shells[dir]; {
-	case noWT:
+	var termTitle, termBody string
+	if noWT {
+		termTitle = "shell"
 		termBody = dimStyle.Render(m.noWorktreeHint())
-	case sh == nil:
-		termBody = dimStyle.Render("tab here (or click) to open a shell in this worktree")
-	case sh.exited.Load():
-		termTitle += " · exited"
-		if m.pane == paneTerm {
-			termTitle += " — enter restarts"
+	} else {
+		tabs := m.termTabsFor(dir)
+		sel := m.termSel[dir]
+		if sel < 0 || sel >= len(tabs) {
+			sel = 0
 		}
-		termBody = sh.render(false)
-	default:
-		termBody = sh.render(m.pane == paneTerm)
-		if n := sh.scrolled(); n > 0 {
-			termTitle += fmt.Sprintf(" · ↑%d", n)
+		termTitle = m.termTabBar(tabs, sel, m.pane == paneTerm)
+		switch t := tabs[sel]; {
+		case t.sess == nil:
+			if t.kind == "setup" {
+				termBody = dimStyle.Render("the setup script runs here when a worktree is created — press enter to run it now")
+			} else {
+				termBody = dimStyle.Render("tab here (or click) to open a shell in this worktree\n\nctrl+t opens another shell tab")
+			}
+		case t.sess.exited.Load():
+			termTitle += " · exited"
+			if m.pane == paneTerm {
+				switch {
+				case t.kind == "setup":
+					termTitle += " — enter reruns"
+				case t.kind != "shell":
+					termTitle += " — enter restarts, x closes"
+				default:
+					termTitle += " — enter restarts"
+				}
+			}
+			termBody = t.sess.render(false)
+		default:
+			termBody = t.sess.render(m.pane == paneTerm)
+			if t.sess.tmuxName != "" {
+				termTitle += dimStyle.Render(" · tmux")
+			}
+			if n := t.sess.scrolled(); n > 0 {
+				termTitle += fmt.Sprintf(" · ↑%d", n)
+			}
 		}
 	}
 	term := m.mark("pane:term",
@@ -335,6 +356,34 @@ func (m Model) workPart(b box, focused bool, title, body string) panePart {
 		edges[1] = edgeRule
 	}
 	return panePart{w: w, rows: rows, edges: edges, focused: focused}
+}
+
+func termTabZoneID(i int) string { return "termtab:" + strconv.Itoa(i) }
+
+// termTabBar is the shell pane's title row: its tabs, the active one carrying
+// the pane style, with a trailing + that opens another shell. ctrl+←/→ move
+// between them from the keyboard.
+func (m Model) termTabBar(tabs []*termTab, sel int, focused bool) string {
+	active := paneTitleStyle
+	if focused {
+		active = paneTitleFocus
+	}
+	parts := make([]string, 0, len(tabs)+1)
+	for i, t := range tabs {
+		// every shell tab reads "shell" — the numbers in the kind only keep
+		// their tmux sessions apart
+		label := t.kind
+		if strings.HasPrefix(label, "shell") {
+			label = "shell"
+		}
+		st := dimStyle
+		if i == sel {
+			st = active
+		}
+		parts = append(parts, m.zones.Mark(termTabZoneID(i), st.Render(label)))
+	}
+	parts = append(parts, m.zones.Mark("termtab:new", dimStyle.Render("+")))
+	return strings.Join(parts, dimStyle.Render(" │ "))
 }
 
 // mark tags a pane's rows for the mouse. The zone covers the pane's inside,

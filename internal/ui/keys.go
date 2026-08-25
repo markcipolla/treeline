@@ -41,6 +41,7 @@ var (
 	keyCommitGo  = key.NewBinding(key.WithKeys("ctrl+s"), key.WithHelp("ctrl+s", "commit"))
 	keyGenMsg    = key.NewBinding(key.WithKeys("ctrl+g"), key.WithHelp("ctrl+g", "generate message"))
 	keyTermEsc   = key.NewBinding(key.WithKeys("ctrl+q"), key.WithHelp("ctrl+q", "next pane"))
+	keyTermTabs  = key.NewBinding(key.WithKeys("ctrl+t"), key.WithHelp("ctrl+t/ctrl+→", "shell tabs"))
 	keySettingsK = key.NewBinding(key.WithKeys(","), key.WithHelp(",", "settings"))
 	keyEditRepo  = key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "edit"))
 	keyAddRepo   = key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "add repo"))

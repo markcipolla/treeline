@@ -19,7 +19,9 @@ func newTestModel(t *testing.T, width int) Model {
 	startTerm = func(dir string, cols, rows int, persist bool) (*claudeSession, error) {
 		return nil, errors.New("claude sessions disabled in tests")
 	}
-	startShell = startTerm
+	startShell = func(dir string, cols, rows int, persist bool, kind string) (*claudeSession, error) {
+		return startTerm(dir, cols, rows, persist)
+	}
 
 	root := t.TempDir()
 	m := New(&config.Config{BranchTypes: []string{"feature"}, SlugMaxLen: 48}, root)

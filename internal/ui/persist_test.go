@@ -146,14 +146,15 @@ func TestDropSessionsKillsThePersistedWork(t *testing.T) {
 	orphan.close() // detached, like a treeline that has quit
 
 	m := Model{
-		cfg:    &config.Config{},
-		terms:  map[string]*claudeSession{},
-		shells: map[string]*claudeSession{dir: shell},
+		cfg:      &config.Config{},
+		terms:    map[string]*claudeSession{},
+		termTabs: map[string][]*termTab{dir: {{kind: "shell", sess: shell}}},
+		termSel:  map[string]int{},
 	}
 	m.dropSessions(dir)
 
-	if _, ok := m.shells[dir]; ok {
-		t.Error("the pane should be dropped from the model")
+	if _, ok := m.termTabs[dir]; ok {
+		t.Error("the pane's tabs should be dropped from the model")
 	}
 	left, err := tmux.List()
 	if err != nil {
