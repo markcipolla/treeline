@@ -63,6 +63,24 @@ func (m Model) keySettings(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// The repo-edit form is the four text inputs with a checkbox between setup
+// and cleanup: positions 0 name, 1 path, 2 setup, 3 show-in-pane, 4 cleanup.
+const (
+	setFieldCount = 5
+	setPaneField  = 3
+)
+
+// setInputIdx maps a form position to its text input, -1 for the checkbox.
+func setInputIdx(f int) int {
+	switch {
+	case f < setPaneField:
+		return f
+	case f == setPaneField:
+		return -1
+	}
+	return f - 1
+}
+
 // openRepoEdit fills the form; name == "" starts a new entry.
 func (m Model) openRepoEdit(name string) (tea.Model, tea.Cmd) {
 	m.setName = name
@@ -71,6 +89,7 @@ func (m Model) openRepoEdit(name string) (tea.Model, tea.Cmd) {
 	m.setInputs[1].SetValue(rc.Path)
 	m.setInputs[2].SetValue(rc.Setup)
 	m.setInputs[3].SetValue(rc.Cleanup)
+	m.setPaneOn = rc.SetupPane
 	m.screen = scrRepoEdit
 	return m, m.setRepoEditFocus(0)
 }
@@ -79,7 +98,7 @@ func (m *Model) setRepoEditFocus(f int) tea.Cmd {
 	m.setFocus = f
 	var cmd tea.Cmd
 	for i := range m.setInputs {
-		if i == f {
+		if i == setInputIdx(f) {
 			cmd = m.setInputs[i].Focus()
 		} else {
 			m.setInputs[i].Blur()
@@ -94,19 +113,26 @@ func (m Model) keyRepoEdit(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.screen = scrSettings
 		return m, nil
 	case "tab", "down":
-		return m, m.setRepoEditFocus((m.setFocus + 1) % len(m.setInputs))
+		return m, m.setRepoEditFocus((m.setFocus + 1) % setFieldCount)
 	case "shift+tab", "up":
-		return m, m.setRepoEditFocus((m.setFocus + len(m.setInputs) - 1) % len(m.setInputs))
+		return m, m.setRepoEditFocus((m.setFocus + setFieldCount - 1) % setFieldCount)
 	case "enter":
-		if m.setFocus < len(m.setInputs)-1 {
+		if m.setFocus < setFieldCount-1 {
 			return m, m.setRepoEditFocus(m.setFocus + 1)
 		}
 		return m.saveRepoEdit()
 	case "ctrl+s":
 		return m.saveRepoEdit()
 	}
+	i := setInputIdx(m.setFocus)
+	if i < 0 { // the checkbox: space (or x) toggles, everything else is ignored
+		if ks := k.String(); ks == " " || ks == "x" {
+			m.setPaneOn = !m.setPaneOn
+		}
+		return m, nil
+	}
 	var cmd tea.Cmd
-	m.setInputs[m.setFocus], cmd = m.setInputs[m.setFocus].Update(k)
+	m.setInputs[i], cmd = m.setInputs[i].Update(k)
 	return m, cmd
 }
 
@@ -129,9 +155,10 @@ func (m Model) saveRepoEdit() (tea.Model, tea.Cmd) {
 		delete(m.cfg.Repos, m.setName)
 	}
 	m.cfg.Repos[name] = config.RepoConfig{
-		Path:    root,
-		Setup:   strings.TrimSpace(m.setInputs[2].Value()),
-		Cleanup: strings.TrimSpace(m.setInputs[3].Value()),
+		Path:      root,
+		Setup:     strings.TrimSpace(m.setInputs[2].Value()),
+		Cleanup:   strings.TrimSpace(m.setInputs[3].Value()),
+		SetupPane: m.setPaneOn,
 	}
 	m.screen = scrSettings
 	return m, m.applyRepoChanges()
@@ -164,6 +191,9 @@ func (m Model) viewSettings() string {
 		marks := ""
 		if rc.Setup != "" {
 			marks += " ⚙setup"
+			if rc.SetupPane {
+				marks += "▸pane"
+			}
 		}
 		if rc.Cleanup != "" {
 			marks += " ⌫cleanup"
@@ -181,11 +211,12 @@ func (m Model) viewSettings() string {
 }
 
 func (m Model) viewRepoEdit() string {
-	labels := [4]string{"name", "path", "setup", "cleanup"}
-	hints := [4]string{
+	labels := [setFieldCount]string{"name", "path", "setup", "", "cleanup"}
+	hints := [setFieldCount]string{
 		"",
 		"path to the primary checkout",
 		"sh -c hook after a worktree is created (env: TREELINE_REPO/WORKTREE/BRANCH/ISSUE)",
+		"space toggles — setup runs in a tab of the shell pane, so a dev server it starts stays visible",
 		"sh -c hook before a worktree is removed",
 	}
 	title := "Edit repo"
@@ -194,10 +225,23 @@ func (m Model) viewRepoEdit() string {
 	}
 	var b strings.Builder
 	b.WriteString(titleStyle.Render(title) + "\n\n")
-	for i := range m.setInputs {
-		b.WriteString(labelStyle.Render(labels[i]) + "\n" + m.setInputs[i].View() + "\n")
-		if hints[i] != "" && i == m.setFocus {
-			b.WriteString(dimStyle.Render("  "+hints[i]) + "\n")
+	for f := 0; f < setFieldCount; f++ {
+		if i := setInputIdx(f); i >= 0 {
+			b.WriteString(labelStyle.Render(labels[f]) + "\n" + m.setInputs[i].View() + "\n")
+		} else {
+			box := "[ ]"
+			if m.setPaneOn {
+				box = "[x]"
+			}
+			line := box + " show setup in a pane"
+			if f == m.setFocus {
+				b.WriteString(cursorStyle.Render("❯ ") + okStyle.Render(line) + "\n")
+			} else {
+				b.WriteString("  " + line + "\n")
+			}
+		}
+		if hints[f] != "" && f == m.setFocus {
+			b.WriteString(dimStyle.Render("  "+hints[f]) + "\n")
 		}
 		b.WriteString("\n")
 	}

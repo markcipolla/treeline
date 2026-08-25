@@ -241,6 +241,7 @@ lifecycle hooks, run with `sh -c` inside the worktree with
   "labmaster": {
     "path": "/Users/you/dev/labmaster",
     "setup": "./scripts/worktree-setup.sh",
+    "setup_pane": true,
     "cleanup": "./scripts/worktree-teardown.sh"
   },
   "conductor": { "path": "/Users/you/dev/conductor" }
@@ -248,8 +249,15 @@ lifecycle hooks, run with `sh -c` inside the worktree with
 ```
 
 `setup` runs after a worktree is created (assign a port, create a
-database); `cleanup` runs before one is removed (drop the database). The
-config lives at `~/.config/treeline/config.json`.
+database); `cleanup` runs before one is removed (drop the database). By
+default `setup` runs in the background; `setup_pane` (the "show setup in a
+pane" checkbox in settings) runs it in a tab of the shell pane instead, so
+a script that starts a dev server has somewhere to keep running — the tab
+scrolls, takes keystrokes, and persists over tmux like the claude and
+shell panes. The shell pane is tabbed either way: `ctrl+t` opens extra
+shell tabs, `ctrl+←`/`ctrl+→` (or a click) switch between them, and each
+tab is its own tmux session. The config lives at
+`~/.config/treeline/config.json`.
 
 `branch_types` controls the type-picker options; `slug_max_len` caps the
 slug generated from issue titles; `persist_sessions` (default on wherever
