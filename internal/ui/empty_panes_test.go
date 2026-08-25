@@ -62,7 +62,7 @@ func TestPanesEmptyWithoutWorktree(t *testing.T) {
 	if got := mm.(Model); got.pane != paneIssues {
 		t.Errorf("focusPane(paneClaude) = %d, want paneIssues", got.pane)
 	}
-	if m.terms[""] != nil || m.shells[""] != nil {
+	if m.terms[""] != nil || m.termSession("") != nil {
 		t.Error("started a session with no worktree")
 	}
 
