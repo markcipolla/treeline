@@ -476,3 +476,37 @@ func TestGitPaneOpensInIDE(t *testing.T) {
 		t.Error("the opened file should have the keys")
 	}
 }
+
+// TestIDEEditingKeepsHighlight: dropping into edit mode must not strip the
+// syntax colors — the pane draws the highlighted buffer itself, with a block
+// cursor overlaid, re-coloring as the text changes.
+func TestIDEEditingKeepsHighlight(t *testing.T) {
+	m := ideTestModel(t, 200)
+	m.openIDEFile("main.go")
+	m = keyIDE(t, m, runes("e"))
+
+	rows := m.ideEditorRows(60, 10)
+	if len(rows) == 0 {
+		t.Fatal("no editor rows while editing")
+	}
+	joined := strings.Join(rows, "\n")
+	if !strings.Contains(joined, "\x1b[38;5;") {
+		t.Error("editing rows lost the syntax colors")
+	}
+	if !strings.Contains(joined, "\x1b[7m") {
+		t.Error("editing rows carry no block cursor")
+	}
+
+	// typing re-highlights: the new rune shows up in the colored rows
+	m = keyIDE(t, m, runes("q"))
+	b := m.ideBuf()
+	if !strings.Contains(ansiRE.ReplaceAllString(b.hl[0], ""), "q") {
+		t.Errorf("typed rune missing from the highlighted line: %q", b.hl[0])
+	}
+
+	// a new line keeps the highlight aligned with the buffer
+	m = keyIDE(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if got, want := len(m.ideBuf().hl), strings.Count(m.ideBuf().val, "\n")+1; got != want {
+		t.Errorf("highlight has %d rows for a %d-line buffer", got, want)
+	}
+}

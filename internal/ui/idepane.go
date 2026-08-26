@@ -19,6 +19,7 @@ import (
 	"github.com/alecthomas/chroma/v2/styles"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/markcipolla/treeline/internal/gitx"
 )
@@ -48,6 +49,16 @@ const (
 // ideMaxFileSize keeps the editor to files a textarea buffer is comfortable
 // with; anything bigger is for a real editor in the shell pane.
 const ideMaxFileSize = 1 << 20
+
+// ideLiveHLMax is the largest buffer re-highlighted on every keystroke while
+// editing. Past it the colors pause until esc — better plain than laggy.
+const ideLiveHLMax = 256 << 10
+
+// ideEditorWidth is the width the hidden textarea believes it has: wide
+// enough that it never soft-wraps, so its rows stay the buffer's logical
+// lines and its LineInfo speaks in columns of the real line. The pane draws
+// the editor itself (highlighted, from b.hl) — the widget only keeps state.
+const ideEditorWidth = 4000
 
 // caps on the filter's recursive walk, so typing into a monorepo stays snappy
 const (
@@ -887,24 +898,33 @@ func (m Model) ideTreeRows(w, h int) []string {
 	return rows
 }
 
-// ideEditorRows is the file half under the tab bar: the textarea while
-// editing, and otherwise the highlighted file behind a gutter of git marks
-// and line numbers.
+// ideEditorRows is the file half under the tab bar: the highlighted buffer
+// behind a gutter of git marks and line numbers. Editing renders the same
+// rows — the hidden textarea only keeps the state — with a block cursor
+// overlaid where it stands, and the window shifted right when the cursor
+// walks past the pane's edge.
 func (m Model) ideEditorRows(w, h int) []string {
-	if m.ideEditing {
-		rows := strings.Split(m.ideEditor.View(), "\n")
-		for i, r := range rows {
-			rows[i] = maxWidthStyle(w).Render(r)
-		}
-		return rows
-	}
 	b := m.ideBuf()
 	if b == nil {
 		return nil
 	}
 	lines := b.hl
 	numW := len(strconv.Itoa(len(lines)))
+	avail := w - numW - 2
+	if avail < 1 {
+		avail = 1
+	}
 	start := clampIdx(b.scrollY, len(lines))
+	curRow, curCol, hoff := -1, 0, 0
+	var plain []string
+	if m.ideEditing {
+		curRow = m.ideEditor.Line()
+		curCol = m.ideEditor.LineInfo().CharOffset
+		if curCol >= avail {
+			hoff = curCol - avail + 1
+		}
+		plain = strings.Split(b.val, "\n")
+	}
 	hits := map[int]bool{}
 	for _, hit := range m.ideFindHits {
 		hits[hit] = true
@@ -920,15 +940,33 @@ func (m Model) ideEditorRows(w, h int) []string {
 		}
 		g := dimStyle
 		switch {
-		case i == b.cursor && m.pane == paneIDE && m.ideFocus == ideFocusFile:
+		case i == curRow, i == b.cursor && !m.ideEditing && m.pane == paneIDE && m.ideFocus == ideFocusFile:
 			g = cursorStyle
 		case hits[i]:
 			g = okStyle
 		}
-		gutter := mark + g.Render(fmt.Sprintf("%*d ", numW, i+1))
-		rows = append(rows, gutter+maxWidthStyle(w-numW-2).Render(lines[i]))
+		line := ansi.Cut(lines[i], hoff, hoff+avail)
+		if i == curRow && curRow < len(plain) {
+			line = overlayIDECursor(line, plain[i], curCol, hoff)
+		}
+		rows = append(rows, mark+g.Render(fmt.Sprintf("%*d ", numW, i+1))+line)
 	}
 	return rows
+}
+
+// overlayIDECursor draws a block cursor into an already-windowed highlighted
+// line: the cell at the cursor's column rendered in reverse video, hardcoded
+// the way the highlighter's own escapes are.
+func overlayIDECursor(line, plain string, col, hoff int) string {
+	c := col - hoff
+	if c < 0 {
+		return line
+	}
+	cell := ansi.Cut(plain, col, col+1)
+	if cell == "" {
+		cell = " " // the cursor rests past the end of the line
+	}
+	return ansi.Cut(line, 0, c) + "\x1b[7m" + cell + "\x1b[27m" + ansi.TruncateLeft(line, c+1, "")
 }
 
 // ---- keyboard ----
@@ -963,10 +1001,25 @@ func (m Model) keyIDEEditing(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+s":
 		return m, m.saveIDEBuf(false)
 	}
+	before := b.val
 	var cmd tea.Cmd
 	m.ideEditor, cmd = m.ideEditor.Update(k)
 	m.stashIDEBuf()
+	if b.val != before {
+		b.hl = liveHighlight(b.val, b.rel)
+	}
+	b.cursor = clampIdx(m.ideEditor.Line(), len(b.hl))
+	m.settleIDEView()
 	return m, cmd
+}
+
+// liveHighlight is highlightSource under a budget: a buffer too large to
+// re-color on every keystroke stays plain — but line-aligned — until esc.
+func liveHighlight(src, filename string) []string {
+	if len(src) > ideLiveHLMax {
+		return strings.Split(src, "\n")
+	}
+	return highlightSource(src, filename)
 }
 
 func (m Model) keyIDEFile(k tea.KeyMsg, confirm string) (tea.Model, tea.Cmd) {
@@ -1376,6 +1429,10 @@ func (m *Model) scrollIDERegion(msg tea.MouseMsg, up bool) {
 			} else {
 				m.ideEditor.CursorDown()
 			}
+		}
+		if b := m.ideBuf(); b != nil {
+			b.cursor = clampIdx(m.ideEditor.Line(), len(b.hl))
+			m.settleIDEView()
 		}
 	default:
 		if b := m.ideBuf(); b != nil {
