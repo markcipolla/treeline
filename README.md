@@ -107,20 +107,20 @@ prompt.
 The mouse works too: click buttons and branch-type options; scroll the
 table and detail view with the wheel.
 
-`ctrl+q` cycles the panes: issues, claude, git, shell. The claude and shell
-panes run in the selected worktree and survive quitting — see
+`ctrl+q` cycles the panes: issues, claude, ide, git, shell. The claude and
+shell panes run in the selected worktree and survive quitting — see
 [Background sessions](#background-sessions).
 
 ### Layouts
 
 How the panes are arranged follows the width of the terminal:
 
-| Width   | Layout                                                            |
-| ------- | ----------------------------------------------------------------- |
-| < 110   | the issues table on its own                                       |
-| 110–179 | issues as a strip on top, claude beside the git pane over a shell |
-| 180–239 | three columns: issues, claude, git over the shell                 |
-| ≥ 240   | four columns: the shell gets one of its own                       |
+| Width   | Layout                                                                 |
+| ------- | ---------------------------------------------------------------------- |
+| < 110   | the issues table on its own                                            |
+| 110–179 | issues as a strip on top; claude, ide, and the git pane over a shell   |
+| 180–279 | four columns: issues, claude, ide, git over the shell                  |
+| ≥ 280   | five columns: the shell gets one of its own                            |
 
 In the stacked layout the issues strip collapses to a single line when
 another pane has focus and grows back to half the screen when you `ctrl+q`
@@ -135,6 +135,26 @@ of them is two lines thick. Sharing one line reads tighter, but then a rule
 inside one panel — the issues grid's dividers — has to T-join the border of
 the panel beside it, and a focused panel's highlight runs into its
 neighbour's edge.
+
+### The ide pane
+
+A scaled-down port of [croft](https://github.com/vitali87/croft) sitting
+between claude and git: a file explorer over the selected worktree beside a
+syntax-highlighted view of the open file. `enter` unfolds a directory or
+opens a file, `e` drops into an editable buffer, `ctrl+s` writes it back
+(and refreshes the git pane), and `esc` climbs back out — editor → file →
+tree. The wheel scrolls whichever half the pointer is over, a click opens
+what it lands on, and unsaved edits pin the pane in place so moving through
+the issues list can't throw them away.
+
+| Key | Action |
+| --- | --- |
+| `↑` `↓` | move through the tree / the open file |
+| `enter` | unfold a directory, open a file, edit the open file |
+| `h` / `l` | fold / unfold (and climb to the parent) |
+| `e` | edit the open file, starting at the line under the cursor |
+| `ctrl+s` | save |
+| `esc` | stop editing → back to the file → back to the tree |
 
 ### The git pane
 

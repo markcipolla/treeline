@@ -47,7 +47,7 @@ func TestIssuesColumnGrowsOnFocus(t *testing.T) {
 		for _, p := range []struct {
 			name string
 			b    box
-		}{{"claude", l.claude}, {"git", l.git}, {"term", l.term}} {
+		}{{"claude", l.claude}, {"ide", l.ide}, {"git", l.git}, {"term", l.term}} {
 			if l.mode == layCols && p.name == "term" {
 				continue // shares the git column's width, checked there
 			}

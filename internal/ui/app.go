@@ -136,7 +136,8 @@ type Model struct {
 	searchSeq     int    // bumped per keystroke; stale ticks/results are dropped
 	searchedFor   string // query the current results answer; "" = none yet
 
-	// panel main screen (wide terminals): 0 issues, 1 claude, 2 git, 3 shell
+	// panel main screen (wide terminals): 0 issues, 1 claude, 2 ide, 3 git,
+	// 4 shell
 	pane  int
 	terms map[string]*claudeSession // interactive claude per directory
 	// the shell pane is tabbed: the shell itself, the repo's setup script
@@ -144,6 +145,25 @@ type Model struct {
 	termTabs    map[string][]*termTab // tabs per directory
 	termSel     map[string]int        // active tab per directory
 	termScanned map[string]bool       // dirs checked for persisted extra tabs
+
+	// ide pane: file explorer + editor for the selected worktree (idepane.go)
+	ideFor      string          // worktree the pane shows
+	ideExpanded map[string]bool // unfolded directories, by rel path
+	ideTree     []ideEntry      // visible rows, depth-first
+	ideSel      int             // cursor in the tree
+	ideScroll   int             // tree window offset
+	ideFocus    int             // which half has the keys: tree or file
+	ideFile     string          // open file, rel to ideFor; "" = none
+	ideHL       []string        // the open file, highlighted, one row per line
+	ideCursor   int             // current line in the file view
+	ideScrollY  int             // file view window offset
+	ideEditing  bool            // the textarea has the keys
+	ideEditor   textarea.Model
+	ideSavedVal string    // buffer as last loaded/saved; dirty = differs
+	ideRawLines []string  // the file's own lines — the textarea flattens
+	ideCRLF     bool      // tabs and CRLF, and saves restore them (idepane.go)
+	ideDirty    bool      // unsaved edits in the buffer
+	ideSavedAt  time.Time // "saved ✓" flash
 
 	diffVP      viewport.Model
 	diffRaw     string
@@ -267,6 +287,13 @@ func New(cfg *config.Config, root string) Model {
 	commitBody.ShowLineNumbers = false
 	commitBody.CharLimit = 0
 
+	ideEditor := textarea.New()
+	ideEditor.ShowLineNumbers = true
+	ideEditor.CharLimit = 0
+	ideEditor.MaxHeight = 0
+	ideEditor.MaxWidth = 0
+	ideEditor.Prompt = ""
+
 	ghOwner, ghRepo, ghOK := github.RepoFromRemote(root)
 
 	repos := buildRepos(cfg, root)
@@ -289,6 +316,8 @@ func New(cfg *config.Config, root string) Model {
 		setInputs:     setInputs,
 		commitSubject: commitSubject,
 		commitBody:    commitBody,
+		ideEditor:     ideEditor,
+		ideExpanded:   map[string]bool{},
 		terms:         map[string]*claudeSession{},
 		termTabs:      map[string][]*termTab{},
 		termSel:       map[string]int{},
@@ -844,6 +873,19 @@ func (m *Model) resize() {
 		}
 		m.diffVP.Width = l.git.w - 2
 		m.diffVP.Height = l.git.h - 4
+		// the ide editor fills the pane beside the explorer strip. Sized for
+		// the strip even while no file is open (the tree spreads out then):
+		// opening a file doesn't come back through here.
+		ideW, ideH := l.ide.w-4, l.ide.h-4
+		edW := ideW - clampW(ideW*30/100, 12, 26) - 3
+		if edW < 10 {
+			edW = 10
+		}
+		if ideH < 1 {
+			ideH = 1
+		}
+		m.ideEditor.SetWidth(edW)
+		m.ideEditor.SetHeight(ideH)
 		m.commitSubject.Width = l.git.w - 10
 		m.commitBody.SetWidth(l.git.w - 6)
 		bh := l.git.h - 13
@@ -1747,11 +1789,17 @@ func (m Model) keyMain(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.pane == paneDiff && m.gitMode == gitModeCommit && k.String() != "ctrl+q" {
 			return m.keyGit(k) // the form owns tab/enter while typing
 		}
+		if m.pane == paneIDE && m.ideEditing && k.String() != "ctrl+q" {
+			return m.keyIDE(k) // the buffer owns tab/enter while editing
+		}
 		switch k.String() {
 		case "tab", "ctrl+q":
 			return m.focusPane(m.cyclePane(1))
 		case "shift+tab":
 			return m.focusPane(m.cyclePane(-1))
+		}
+		if m.pane == paneIDE {
+			return m.keyIDE(k)
 		}
 		if m.pane == paneDiff {
 			return m.keyGit(k)
@@ -1882,9 +1930,10 @@ func (m Model) keyMain(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 const (
 	paneIssues = 0
 	paneClaude = 1
-	paneDiff   = 2
-	paneTerm   = 3
-	paneCount  = 4
+	paneIDE    = 2
+	paneDiff   = 3
+	paneTerm   = 4
+	paneCount  = 5
 )
 
 // paneEnabled reports whether a pane can hold focus: claude, git and the shell
@@ -1924,6 +1973,16 @@ func (m Model) focusPane(p int) (tea.Model, tea.Cmd) {
 	if p == paneDiff {
 		m.gitFreshAt = time.Now()
 		return m, tea.Batch(m.reloadGit(), m.loadSelectedFileDiff())
+	}
+	if p == paneIDE {
+		if dir := m.claudeDir(); dir != m.ideFor {
+			m.resetIDE(dir)
+		} else if len(m.ideTree) == 0 {
+			m.refreshIDETree()
+		}
+		if m.ideEditing {
+			return m, textarea.Blink
+		}
 	}
 	return m, nil
 }
@@ -2316,6 +2375,10 @@ func (m *Model) syncPanes() tea.Cmd {
 		}
 	}
 
+	if dir := m.claudeDir(); dir != m.ideFor {
+		m.resetIDE(dir) // keeps its place instead when edits are unsaved
+	}
+
 	if dir := m.claudeDir(); dir != m.gitFor {
 		m.gitFor = dir
 		m.gitMode = gitModeFiles
@@ -2530,6 +2593,10 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				}
 				// an empty pane has no scrollback: move the cards instead
 			}
+			if m.threePane() && over == paneIDE {
+				m.scrollIDERegion(msg, up)
+				return m, nil
+			}
 			if m.threePane() && over == paneDiff {
 				m.gitSel.clear()
 				switch m.gitMode {
@@ -2630,6 +2697,7 @@ func (m Model) paneUnder(msg tea.MouseMsg) (int, bool) {
 		pane int
 	}{
 		{"pane:claude", paneClaude},
+		{"pane:ide", paneIDE},
 		{"pane:diff", paneDiff},
 		{"pane:term", paneTerm},
 		{"pane:issues", paneIssues},
@@ -2646,6 +2714,8 @@ func paneZoneID(pane int) string {
 	switch pane {
 	case paneClaude:
 		return "pane:claude"
+	case paneIDE:
+		return "pane:ide"
 	case paneTerm:
 		return "pane:term"
 	case paneDiff:
@@ -2892,6 +2962,9 @@ func (m Model) handleClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 					return m.clickGitFile(true, i)
 				}
 			}
+		}
+		if m.threePane() && m.clicked(msg, "pane:ide") {
+			return m.clickIDE(msg)
 		}
 		switch {
 		case m.clicked(msg, "pane:claude"):

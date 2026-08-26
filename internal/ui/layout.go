@@ -2,16 +2,17 @@ package ui
 
 // Main-screen layouts, by terminal width. A narrow terminal gets the issues
 // table on its own; as the space grows the work panes join it, first stacked
-// under a full-width issues strip, then as columns of their own.
+// under a full-width issues strip, then as columns of their own. The ide pane
+// sits between claude and git wherever the work panes show.
 //
-//	layTable   layStack        layCols            layFour
-//	┌──────┐   ┌──────────┐   ┌────┬────┬────┐   ┌───┬───┬───┬───┐
-//	│issues│   │  issues  │   │    │    │git │   │   │   │   │   │
-//	│      │   ├─────┬────┤   │iss.│cld.├────┤   │is.│cl.│git│sh.│
-//	│      │   │claude│git│   │    │    │shl │   │   │   │   │   │
-//	└──────┘   │      ├───┤   └────┴────┴────┘   └───┴───┴───┴───┘
-//	           │      │shl│
-//	           └──────┴───┘
+//	layTable   layStack          layCols                 layFour
+//	┌──────┐   ┌────────────┐   ┌────┬────┬───┬────┐   ┌───┬───┬───┬───┬───┐
+//	│issues│   │   issues   │   │    │    │   │git │   │   │   │   │   │   │
+//	│      │   ├────┬───┬───┤   │iss.│cld.│ide├────┤   │is.│cl.│ide│git│sh.│
+//	│      │   │cld.│ide│git│   │    │    │   │shl │   │   │   │   │   │   │
+//	└──────┘   │    │   ├───┤   └────┴────┴───┴────┘   └───┴───┴───┴───┴───┘
+//	           │    │   │shl│
+//	           └────┴───┴───┘
 const (
 	layTable = iota // just the issues table
 	layStack        // issues strip on top, claude | git over shell below
@@ -24,9 +25,9 @@ const (
 // starts shedding cells, and a terminal pane below ~50 is uncomfortable for
 // claude and for a shell alike.
 const (
-	minPanels = 110 // claude and git fit beside the issues strip
+	minPanels = 110 // claude, ide and git fit beside the issues strip
 	minCols   = 180 // ...and the issues list fits beside them
-	minFour   = 240 // ...and the shell earns a column of its own
+	minFour   = 280 // ...and the shell earns a column of its own
 )
 
 // Grid geometry. KEY, PRIORITY, GIT, CI, ASSIGNEE and REPO are fixed width;
@@ -47,12 +48,10 @@ const (
 	narrowGrid = 80
 
 	// minWorkCol is the narrowest a work pane is worth showing at: below this
-	// a shell wraps everything and a diff is unreadable. focusedIssuesPct is
-	// what protects it — capping the focused issues column at a share of the
-	// band leaves every work pane above minWorkCol at all the widths that
-	// reach a column layout.
-	minWorkCol       = 34
-	focusedIssuesPct = 55
+	// a shell wraps everything and a diff is unreadable. workFloor is what
+	// protects it — the focused issues column stops growing before any work
+	// column's share of the rest would drop under it.
+	minWorkCol = 34
 )
 
 func (m Model) layoutMode() int {
@@ -85,8 +84,8 @@ type box struct{ w, h int }
 // resize of the embedded terminals, and the mouse handlers that need to know
 // which cell a click landed on.
 type layout struct {
-	mode                      int
-	issues, claude, git, term box
+	mode                           int
+	issues, claude, ide, git, term box
 }
 
 func (m Model) layout() layout {
@@ -105,31 +104,37 @@ func (m Model) layout() layout {
 	case layStack:
 		topH, bottomH := stackHeights(avail, m.pane == paneIssues)
 		gitH, termH := splitRight(bottomH)
-		lw := w / 2
+		lw := w * 36 / 100
+		ew := w * 32 / 100
 		l.issues = box{w, topH}
 		l.claude = box{lw, bottomH}
-		l.git = box{w - lw, gitH}
-		l.term = box{w - lw, termH}
+		l.ide = box{ew, bottomH}
+		l.git = box{w - lw - ew, gitH}
+		l.term = box{w - lw - ew, termH}
 
 	case layCols:
 		iw := m.issuesColWidth(clampW(w*32/100, 50, 72), w)
 		rest := w - iw
-		cw := rest * 55 / 100
+		cw := rest * 38 / 100
+		ew := rest * 30 / 100
 		gitH, termH := splitRight(avail)
 		l.issues = box{iw, avail}
 		l.claude = box{cw, avail}
-		l.git = box{rest - cw, gitH}
-		l.term = box{rest - cw, termH}
+		l.ide = box{ew, avail}
+		l.git = box{rest - cw - ew, gitH}
+		l.term = box{rest - cw - ew, termH}
 
 	case layFour:
 		iw := m.issuesColWidth(clampW(w*26/100, 50, 64), w)
 		rest := w - iw
-		cw := rest * 38 / 100
-		gw := rest * 34 / 100
+		cw := rest * 28 / 100
+		ew := rest * 26 / 100
+		gw := rest * 24 / 100
 		l.issues = box{iw, avail}
 		l.claude = box{cw, avail}
+		l.ide = box{ew, avail}
 		l.git = box{gw, avail}
-		l.term = box{rest - cw - gw, avail}
+		l.term = box{rest - cw - ew - gw, avail}
 
 	default:
 		h := m.height - docStyle.GetVerticalFrameSize() - 4
@@ -206,9 +211,19 @@ func (m Model) issuesColWidth(base, w int) int {
 	if m.pane != paneIssues {
 		return base
 	}
-	room := w * focusedIssuesPct / 100
+	room := w - m.workFloor()
 	if room < base {
 		room = base // a terminal this tight has nothing to lend
 	}
 	return clampW(m.gridFullWidth(), base, room)
+}
+
+// workFloor is the band the work panes cannot spare: enough that the smallest
+// column share stays at minWorkCol once the rest is divided up.
+func (m Model) workFloor() int {
+	share := 30 // ide's cut, the smallest of three columns (layCols)
+	if m.layoutMode() == layFour {
+		share = 22 // the shell's, the smallest of four
+	}
+	return (minWorkCol*100 + share - 1) / share
 }
