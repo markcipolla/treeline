@@ -107,18 +107,31 @@ func (m Model) viewHeader() string {
 	if w < 20 {
 		w = 20
 	}
-	// settings sits top-right, past the linear status. Only on the main
-	// screen: the settings screen is where the button leads, and the modal
-	// screens have their own buttons.
+	// the counts and buttons sit beside the logo, settings top-right past the
+	// linear status. Only on the main screen: the settings screen is where
+	// the gear leads, and the modal screens have their own buttons.
 	if m.screen == scrMain {
-		gear := m.button("btn:settings", "⚙ settings", false)
-		if lipgloss.Width(left)+lipgloss.Width(right)+lipgloss.Width(gear)+4 > w {
-			gear = m.button("btn:settings", "⚙", false) // tight header: bare gear
-		}
 		if right != "" {
 			right += "  "
 		}
-		right += gear
+		gear := right + m.button("btn:settings", "⚙ settings", false)
+		tightGear := right + m.button("btn:settings", "⚙", false)
+		// widest cluster that fits; the counts go before the button labels do
+		cands := []struct{ mid, right string }{
+			{m.summaryCluster(true, true), gear},
+			{m.summaryCluster(false, true), gear},
+			{m.summaryCluster(false, false), tightGear},
+			{"", tightGear},
+		}
+		pick := cands[len(cands)-1]
+		for _, c := range cands {
+			if lipgloss.Width(left)+lipgloss.Width(c.mid)+lipgloss.Width(c.right)+2 <= w {
+				pick = c
+				break
+			}
+		}
+		left += pick.mid
+		right = pick.right
 	}
 	gap := w - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 2 {
@@ -126,6 +139,43 @@ func (m Model) viewHeader() string {
 	}
 	return left + strings.Repeat(" ", gap) + right + "\n" +
 		metaStyle.Render(strings.Repeat("═", w))
+}
+
+// summaryCluster is the main-screen header's middle: the issue and worktree
+// counts, the new/search buttons, a spinner while anything refreshes, and a
+// connect button while Linear isn't. counts and longLabels shed detail as the
+// header tightens.
+func (m Model) summaryCluster(counts, longLabels bool) string {
+	s := ""
+	if counts {
+		s += "  " + metaStyle.Render(fmt.Sprintf("%d issues · %d worktrees", len(m.issues), len(m.wts)))
+	}
+	newL, searchL := "+ new", "⌕ search"
+	if !longLabels {
+		newL, searchL = "+", "⌕"
+	}
+	s += "  " + m.button("btn:new", newL, false) + " " + m.button("btn:search", searchL, false)
+	if m.loadingWT || m.loadingIssues || m.loadingCI {
+		s += "  " + m.spinner.View()
+		if counts {
+			s += dimStyle.Render(" refreshing…")
+		}
+	}
+	if !m.authed {
+		label := "connect linear"
+		if !longLabels {
+			label = "connect"
+		}
+		s += "  " + m.button("btn:connect", label, true)
+		if counts {
+			note := " to see your issues here"
+			if m.cfg.Linear.App().ClientID == "" {
+				note = " (needs an OAuth app — see README)"
+			}
+			s += dimStyle.Render(note)
+		}
+	}
+	return s
 }
 
 func (m Model) statusOrHelp(bindings []key.Binding) string {
@@ -152,21 +202,8 @@ func (m Model) buttonRow(buttons ...string) string {
 }
 
 func (m Model) viewMain() string {
-	summary := metaStyle.Render(fmt.Sprintf("%d issues · %d worktrees", len(m.issues), len(m.wts))) +
-		"  " + m.button("btn:new", "+ new", false) +
-		"  " + m.button("btn:search", "⌕ search", false)
-	if m.loadingWT || m.loadingIssues || m.loadingCI {
-		summary += "  " + m.spinner.View() + dimStyle.Render(" refreshing…")
-	}
-	if !m.authed {
-		summary += "  " + m.button("btn:connect", "connect linear", true)
-		note := " to see your issues here"
-		if m.cfg.Linear.App().ClientID == "" {
-			note = " (needs an OAuth app — see README)"
-		}
-		summary += dimStyle.Render(note)
-	}
-
+	// the counts, the new/search buttons and the auth state all live in the
+	// header (see summaryCluster) — the panes get the height they occupied
 	filterLine := ""
 	if m.filtering || m.filterInput.Value() != "" {
 		filterLine = m.filterInput.View() + "\n"
@@ -202,7 +239,7 @@ func (m Model) viewMain() string {
 	if m.threePane() {
 		content = m.viewPanels()
 	}
-	return summary + "\n\n" + filterLine + content + "\n" + m.statusOrHelp(bindings)
+	return filterLine + content + "\n" + m.statusOrHelp(bindings)
 }
 
 // viewPanels lays out the wide-terminal main screen. The arrangement follows

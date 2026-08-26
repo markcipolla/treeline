@@ -95,8 +95,8 @@ func (m Model) layout() layout {
 	if w < 40 {
 		w = 40
 	}
-	// doc frame, header + divider, summary, help, spare
-	avail := m.height - 8
+	// doc frame, header + divider, help, spare
+	avail := m.height - 6
 	if avail < 12 {
 		avail = 12
 	}
@@ -132,7 +132,7 @@ func (m Model) layout() layout {
 		l.term = box{rest - cw - gw, avail}
 
 	default:
-		h := m.height - docStyle.GetVerticalFrameSize() - 6
+		h := m.height - docStyle.GetVerticalFrameSize() - 4
 		if h < 3 {
 			h = 3
 		}
