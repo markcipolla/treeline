@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +9,8 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/markcipolla/treeline/internal/gitx"
 )
@@ -625,5 +628,73 @@ func TestSeamDragResizesPanes(t *testing.T) {
 	m = mm.(Model)
 	if got := m.layout().claude.w; got != minDragCol+6 {
 		t.Errorf("claude pane should follow the pointer back: %d, want %d", got, minDragCol+6)
+	}
+}
+
+// TestIDETabCloseClick: the active tab wears a ✕; clicking it closes the tab,
+// a dirty buffer warning first the way the x key does.
+func TestIDETabCloseClick(t *testing.T) {
+	m := ideTestModel(t, 200)
+	m.openIDEFile("main.go")
+	m.openIDEFile(filepath.Join("sub", "util.go"))
+
+	z := awaitZone(t, m, ideTabCloseZoneID())
+	click := tea.MouseMsg{X: z.StartX, Y: z.StartY,
+		Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease}
+	mm, _ := m.Update(click)
+	m = mm.(Model)
+	if len(m.ideBufs) != 1 || m.ideBuf().rel != "main.go" {
+		t.Fatalf("✕ should close util.go, got %d tabs, active %v", len(m.ideBufs), m.ideBuf())
+	}
+
+	m = keyIDE(t, m, runes("e"))
+	m = typeIDE(t, m, "zz")
+	m = keyIDE(t, m, tea.KeyMsg{Type: tea.KeyEsc}) // dirty now
+
+	z = awaitZone(t, m, ideTabCloseZoneID())
+	click = tea.MouseMsg{X: z.StartX, Y: z.StartY,
+		Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease}
+	mm, _ = m.Update(click)
+	m = mm.(Model)
+	if len(m.ideBufs) != 1 {
+		t.Fatal("a dirty tab must not close on the first ✕")
+	}
+	mm, _ = m.Update(click)
+	m = mm.(Model)
+	if len(m.ideBufs) != 0 {
+		t.Fatalf("second ✕ should close the tab, got %d", len(m.ideBufs))
+	}
+}
+
+// TestIDETabStripScrolls: a strip wider than the file half slides so the
+// active tab is always fully visible, and never runs past the half's edge.
+func TestIDETabStripScrolls(t *testing.T) {
+	m := ideTestModel(t, 200)
+	dir := m.wts[0].Path
+	for i := 0; i < 8; i++ {
+		rel := fmt.Sprintf("a-rather-long-file-name-%d.go", i)
+		writeIDEFile(t, dir, rel, "package x\n")
+		m.openIDEFile(rel)
+	}
+
+	const w = 60
+	bar := m.ideTabBar(w)
+	for _, ln := range bar {
+		if got := lipgloss.Width(ln); got != w {
+			t.Fatalf("tab bar row width = %d, want %d (%q)", got, w, ln)
+		}
+	}
+	strip := ansi.Strip(strings.Join(bar, "\n"))
+	if !strings.Contains(strip, "a-rather-long-file-name-7.go") {
+		t.Errorf("the active (last) tab should be visible:\n%s", strip)
+	}
+	if strings.Contains(strip, "a-rather-long-file-name-0.go") {
+		t.Errorf("the first tab should be scrolled off:\n%s", strip)
+	}
+
+	m.activateIDEBuf(0)
+	strip = ansi.Strip(strings.Join(m.ideTabBar(w), "\n"))
+	if !strings.Contains(strip, "a-rather-long-file-name-0.go") {
+		t.Errorf("activating the first tab should scroll back:\n%s", strip)
 	}
 }

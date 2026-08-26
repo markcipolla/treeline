@@ -1,2 +1,9 @@
 [tools]
 go = "1.24"
+
+# hot-reload: rebuild and restart treeline whenever a .go file changes
+# (needs watchexec: brew install watchexec). `mise run dev` here runs it
+# against this repo; to point it at another repo, run scripts/hot-reload
+# from that repo's directory instead.
+[tasks.dev]
+run = '{{config_root}}/scripts/hot-reload'
