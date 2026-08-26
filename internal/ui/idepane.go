@@ -809,8 +809,7 @@ func (m Model) idePaneContent(w, h int) (string, string) {
 	if len(m.ideBufs) == 0 {
 		// the editor half keeps its place while empty, so opening a file
 		// fills it in rather than reshaping the pane
-		right = []string{"", dimStyle.Render(truncate("enter (or click) opens a file here", edW)),
-			"", dimStyle.Render(truncate("/ filters the tree · a makes a file", edW))}
+		right = strings.Split(ideZeroState(edW, ch), "\n")
 	} else {
 		right = append([]string{m.ideTabBar(edW)}, m.ideEditorRows(edW, m.ideViewH())...)
 	}
@@ -825,6 +824,32 @@ func (m Model) idePaneContent(w, h int) (string, string) {
 		rows = append(rows, padTo(t, treeW)+div+e)
 	}
 	return title, strings.Join(rows, "\n")
+}
+
+// ideZeroState fills the file half before anything is open: the key hints sit
+// centered in the space the editor will take over, each key drawn as a chip.
+func ideZeroState(w, h int) string {
+	if w < 1 {
+		w = 1
+	}
+	if h < 1 {
+		h = 1
+	}
+	key := lipgloss.NewStyle().Foreground(btnFg).Background(btnBg).Padding(0, 1)
+	hint := func(k, rest string) string {
+		return key.Render(k) + dimStyle.Render(" "+rest)
+	}
+	body := lipgloss.JoinVertical(lipgloss.Center,
+		metaStyle.Bold(true).Render("nothing open yet"),
+		"",
+		hint("enter", "or a click opens a file"),
+		"",
+		hint("/", "filters the tree"),
+		"",
+		hint("a", "makes a file"),
+	)
+	return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center,
+		maxWidthStyle(w).Render(body))
 }
 
 // ideTabBar is the file half's top row: one tab per open file, the active one
