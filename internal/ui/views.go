@@ -228,10 +228,12 @@ func (m Model) viewMain() string {
 			switch {
 			case m.ideEditing:
 				bindings = []key.Binding{keyIDESave, keyIDEView, keyTermEsc}
+			case m.ideInputKind != ideInputNone:
+				bindings = []key.Binding{keyApply, keyCancel}
 			case m.ideFocus == ideFocusFile:
-				bindings = []key.Binding{keyIDEEdit, keyIDESave, keyIDETree}
+				bindings = []key.Binding{keyIDEEdit, keyIDESave, keyIDEFind, keyIDETabs, keyIDEClose, keyIDETree}
 			default:
-				bindings = []key.Binding{keyIDEOpen, keyIDEFold, keyBack}
+				bindings = []key.Binding{keyIDEOpen, keyIDEFilter, keyIDENew, keyIDERename, keyIDEDel}
 			}
 		case paneDiff:
 			bindings = []key.Binding{keyChoose, keyStage, keyHunks, keyCommitC, keyLog, keyBranchD, keyBack}
@@ -309,7 +311,7 @@ func (m Model) viewPanels() string {
 		m.workPart(l.claude, m.pane == paneClaude, claudeTitle, claudeBody))
 
 	ideTitle, ideBody := m.idePaneContent(l.ide.w-4, l.ide.h-4)
-	if noWT && !m.ideDirty {
+	if noWT && !m.ideAnyDirty() {
 		ideTitle, ideBody = "ide", dimStyle.Render(m.noWorktreeHint())
 	}
 	ide := m.mark("pane:ide",
