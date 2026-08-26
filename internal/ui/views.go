@@ -224,6 +224,15 @@ func (m Model) viewMain() string {
 			bindings = []key.Binding{keyTermEsc}
 		case paneTerm:
 			bindings = []key.Binding{keyTermTabs, keyTermEsc}
+		case paneIDE:
+			switch {
+			case m.ideEditing:
+				bindings = []key.Binding{keyIDESave, keyIDEView, keyTermEsc}
+			case m.ideFocus == ideFocusFile:
+				bindings = []key.Binding{keyIDEEdit, keyIDESave, keyIDETree}
+			default:
+				bindings = []key.Binding{keyIDEOpen, keyIDEFold, keyBack}
+			}
 		case paneDiff:
 			bindings = []key.Binding{keyChoose, keyStage, keyHunks, keyCommitC, keyLog, keyBranchD, keyBack}
 			if m.gitMode == gitModeCommit {
@@ -299,6 +308,13 @@ func (m Model) viewPanels() string {
 	claude := m.mark("pane:claude",
 		m.workPart(l.claude, m.pane == paneClaude, claudeTitle, claudeBody))
 
+	ideTitle, ideBody := m.idePaneContent(l.ide.w-4, l.ide.h-4)
+	if noWT && !m.ideDirty {
+		ideTitle, ideBody = "ide", dimStyle.Render(m.noWorktreeHint())
+	}
+	ide := m.mark("pane:ide",
+		m.workPart(l.ide, m.pane == paneIDE, ideTitle, ideBody))
+
 	gitTitle, gitBody := m.gitPaneContent(l.git.w-4, l.git.h-4)
 	if wt := m.selectedRef().wt; wt != nil && wt.Prunable {
 		gitTitle, gitBody = "git", warnStyle.Render("worktree directory is gone — press d to clean it up")
@@ -360,11 +376,11 @@ func (m Model) viewPanels() string {
 
 	switch l.mode {
 	case layFour:
-		return frame(band{{issues}, {claude}, {git}, {term}})
+		return frame(band{{issues}, {claude}, {ide}, {git}, {term}})
 	case layCols:
-		return frame(band{{issues}, {claude}, {git, term}})
+		return frame(band{{issues}, {claude}, {ide}, {git, term}})
 	}
-	return frame(band{{issues}}, band{{claude}, {git, term}})
+	return frame(band{{issues}}, band{{claude}, {ide}, {git, term}})
 }
 
 // workPart builds one of the work panes: its title, the ═ rule under it, and

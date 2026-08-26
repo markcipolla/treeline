@@ -47,7 +47,7 @@ func TestPanesEmptyWithoutWorktree(t *testing.T) {
 		t.Errorf("gitFor = %q, want empty", m.gitFor)
 	}
 
-	for _, p := range []int{paneClaude, paneDiff, paneTerm} {
+	for _, p := range []int{paneClaude, paneIDE, paneDiff, paneTerm} {
 		if m.paneEnabled(p) {
 			t.Errorf("pane %d enabled without a worktree", p)
 		}

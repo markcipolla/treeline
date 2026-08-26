@@ -15,8 +15,8 @@ func TestLayoutModeByWidth(t *testing.T) {
 	}{
 		{80, layTable}, {109, layTable},
 		{110, layStack}, {179, layStack},
-		{180, layCols}, {239, layCols},
-		{240, layFour}, {400, layFour},
+		{180, layCols}, {279, layCols},
+		{280, layFour}, {400, layFour},
 	} {
 		m := Model{width: tc.width, height: 40}
 		if got := m.layoutMode(); got != tc.mode {
@@ -35,9 +35,9 @@ func TestColumnLayoutsSitSideBySide(t *testing.T) {
 		sameRowAs   []string
 		belowClaude string
 	}{
-		{160, []string{"claude", "git"}, ""}, // stacked: issues on top
-		{200, []string{"issues", "claude", "git"}, "shell"},
-		{260, []string{"issues", "claude", "git", "shell"}, ""},
+		{160, []string{"claude", "ide", "git"}, ""}, // stacked: issues on top
+		{200, []string{"issues", "claude", "ide", "git"}, "shell"},
+		{300, []string{"issues", "claude", "ide", "git", "shell"}, ""},
 	} {
 		m := withIssues(newTestModel(t, tc.width))
 		m.height = 44
@@ -74,7 +74,7 @@ func TestColumnLayoutsSitSideBySide(t *testing.T) {
 // panel down, and a short one leaves a gap under the panes.
 func TestColumnLayoutsFitTheTerminal(t *testing.T) {
 	for _, size := range [][2]int{{180, 30}, {200, 44}, {240, 50}, {300, 60}, {400, 80}} {
-		for _, pane := range []int{paneIssues, paneClaude, paneDiff, paneTerm} {
+		for _, pane := range []int{paneIssues, paneClaude, paneIDE, paneDiff, paneTerm} {
 			m := withIssues(newTestModel(t, size[0]))
 			m.height = size[1]
 			m.resize()
