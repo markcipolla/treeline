@@ -288,12 +288,16 @@ func New(cfg *config.Config, root string) Model {
 	commitBody.ShowLineNumbers = false
 	commitBody.CharLimit = 0
 
+	// the pane draws the editor itself, highlighted (see ideEditorRows); the
+	// textarea only keeps the buffer and cursor, and its width is set past
+	// any real line so it never soft-wraps
 	ideEditor := textarea.New()
-	ideEditor.ShowLineNumbers = true
+	ideEditor.ShowLineNumbers = false
 	ideEditor.CharLimit = 0
 	ideEditor.MaxHeight = 0
 	ideEditor.MaxWidth = 0
 	ideEditor.Prompt = ""
+	ideEditor.SetWidth(ideEditorWidth)
 
 	ghOwner, ghRepo, ghOK := github.RepoFromRemote(root)
 
@@ -890,20 +894,9 @@ func (m *Model) resize() {
 		}
 		m.diffVP.Width = l.git.w - 2
 		m.diffVP.Height = l.git.h - 4
-		// the ide editor fills the pane beside the explorer strip, under the
-		// tab bar. Sized for the strip even while no file is open (the tree
-		// spreads out then): opening a file doesn't come back through here.
-		ideW, ideH := l.ide.w-4, l.ide.h-5
-		edW := ideW - clampW(ideW*30/100, 12, 26) - 3
-		if edW < 10 {
-			edW = 10
-		}
-		if ideH < 1 {
-			ideH = 1
-		}
-		m.ideEditor.SetWidth(edW)
-		m.ideEditor.SetHeight(ideH)
-		m.ideInput.Width = ideW - 4
+		// the ide editor is drawn by the pane itself and never resizes; only
+		// its ask-line follows the pane's width
+		m.ideInput.Width = l.ide.w - 8
 		m.commitSubject.Width = l.git.w - 10
 		m.commitBody.SetWidth(l.git.w - 6)
 		bh := l.git.h - 13
