@@ -34,6 +34,9 @@ fi
 bin="$(mktemp -d)/treeline"
 export TREELINE_HR_SRC="$src" TREELINE_HR_BIN="$bin" TREELINE_HR_GO="$go_bin"
 
+# --no-vcs-ignore: a treeline worktree lives under .worktrees/, which the
+# repo's own .gitignore ignores — with default ignores watchexec drops every
+# event inside it and nothing ever reloads. --exts go keeps the noise out.
 echo "watching $src — treeline runs against $PWD" >&2
-exec watchexec --watch "$src" --exts go --restart --stop-signal SIGTERM \
+exec watchexec --watch "$src" --exts go --no-vcs-ignore --restart --stop-signal SIGTERM \
   '"$TREELINE_HR_GO" build -C "$TREELINE_HR_SRC" -o "$TREELINE_HR_BIN" . && exec "$TREELINE_HR_BIN"'
