@@ -791,6 +791,13 @@ func (m Model) idePaneContent(w, h int) (string, string) {
 	ch := m.ideContentH()
 	treeW := m.ideTreeWidth(w)
 	tree := m.ideTreeRows(treeW, ch)
+	// the divider between the halves wears the pane's chrome: it continues
+	// into the title rule and bottom border (see idePart), and the whole
+	// line follows focus with them
+	div := metaStyle.Render(" │ ")
+	if m.pane == paneIDE {
+		div = okStyle.Render(" │ ")
+	}
 	edW := w - treeW - 3 // " │ " between the halves
 	var right []string
 	if len(m.ideBufs) == 0 {
@@ -801,7 +808,6 @@ func (m Model) idePaneContent(w, h int) (string, string) {
 	} else {
 		right = append([]string{m.ideTabBar(edW)}, m.ideEditorRows(edW, m.ideViewH())...)
 	}
-	div := dimStyle.Render(" │ ")
 	for i := 0; i < ch; i++ {
 		t, e := "", ""
 		if i < len(tree) {

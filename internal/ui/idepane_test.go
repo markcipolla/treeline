@@ -510,3 +510,57 @@ func TestIDEEditingKeepsHighlight(t *testing.T) {
 		t.Errorf("highlight has %d rows for a %d-line buffer", got, want)
 	}
 }
+
+// TestIDEDividerRunsFullHeight: the explorer/editor divider is part of the
+// pane's chrome — ╤ where it meets the title rule, │ on every body row, ┴
+// into the bottom border — not a line hanging in the middle.
+func TestIDEDividerRunsFullHeight(t *testing.T) {
+	m := ideTestModel(t, 220)
+	m.height = 30
+	m.resize()
+	mm, _ := m.focusPane(paneIDE)
+	m = mm.(Model)
+	m.openIDEFile("main.go")
+
+	var lines [][]rune
+	for _, l := range strings.Split(m.View(), "\n") {
+		lines = append(lines, []rune(ansiRE.ReplaceAllString(l, "")))
+	}
+	titleRow := -1
+	for i, l := range lines {
+		if strings.Contains(string(l), "ide — main.go") {
+			titleRow = i
+			break
+		}
+	}
+	if titleRow < 0 {
+		t.Fatal("no ide title row")
+	}
+	after := strings.Index(string(lines[titleRow]), "ide —")
+	col := -1
+	for x := after; x < len(lines[titleRow+1]); x++ {
+		if lines[titleRow+1][x] == '╤' {
+			col = x
+			break
+		}
+	}
+	if col < 0 {
+		t.Fatalf("the ide title rule carries no ╤: %q", string(lines[titleRow+1]))
+	}
+	closed := false
+	for i := titleRow + 2; i < len(lines) && !closed; i++ {
+		if col >= len(lines[i]) {
+			t.Fatalf("row %d too short for the divider column", i)
+		}
+		switch lines[i][col] {
+		case '│':
+		case '┴':
+			closed = true
+		default:
+			t.Fatalf("row %d breaks the divider at col %d: %q", i, col, string(lines[i][col]))
+		}
+	}
+	if !closed {
+		t.Error("the divider never reaches the bottom border's ┴")
+	}
+}
