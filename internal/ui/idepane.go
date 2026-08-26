@@ -94,6 +94,7 @@ type ideBuf struct {
 
 func ideZoneID(i int) string    { return "ide:t:" + strconv.Itoa(i) }
 func ideTabZoneID(i int) string { return "ide:tab:" + strconv.Itoa(i) }
+func ideTabCloseZoneID() string { return "ide:tabx" }
 
 // ideBuf is the active tab's buffer, nil with nothing open.
 func (m *Model) ideBuf() *ideBuf {
@@ -863,8 +864,10 @@ var (
 )
 
 // ideTabBar is the file half's top rows: one bordered tab per open file, the
-// active one open at the bottom, dirty and stale marked on the name. Three
-// rows tall — ideViewH leaves room for it.
+// active one open at the bottom and wearing a clickable ✕, dirty and stale
+// marked on the name. Three rows tall — ideViewH leaves room for it. A strip
+// wider than the half scrolls just enough that the active tab is fully
+// visible, so an obscured tab is reached by selecting it ([ ] or the tree).
 func (m Model) ideTabBar(w int) []string {
 	activeText := paneTitleStyle
 	activeBorder := subtle
@@ -882,20 +885,33 @@ func (m Model) ideTabBar(w int) []string {
 			label += " ⚠"
 		}
 		st := lipgloss.NewStyle().Border(ideTabBorder).BorderForeground(subtle).Padding(0, 1)
-		txt := dimStyle
+		body := dimStyle.Render(label)
 		if i == m.ideCur {
 			st = st.Border(ideTabActiveBorder).BorderForeground(activeBorder)
-			txt = activeText
+			body = activeText.Render(label) + " " +
+				m.zones.Mark(ideTabCloseZoneID(), dimStyle.Render("✕"))
 		}
-		parts = append(parts, m.zones.Mark(ideTabZoneID(i), st.Render(txt.Render(label))))
+		parts = append(parts, m.zones.Mark(ideTabZoneID(i), st.Render(body)))
 	}
 	row := lipgloss.JoinHorizontal(lipgloss.Top, parts...)
-	lines := strings.Split(maxWidthStyle(w).Render(row), "\n")
-	// the shelf the tabs hang from runs the editor's full width
-	if n := len(lines); n > 0 {
-		if used := lipgloss.Width(row); used < w {
-			lines[n-1] += dimStyle.Render(strings.Repeat("─", w-used))
+	total := lipgloss.Width(row)
+	off := 0
+	if total > w {
+		right := 0
+		for i := 0; i <= m.ideCur && i < len(parts); i++ {
+			right += lipgloss.Width(parts[i])
 		}
+		if right > w {
+			off = right - w
+		}
+	}
+	lines := strings.Split(row, "\n")
+	for i := range lines {
+		lines[i] = ansi.Cut(lines[i], off, off+w)
+	}
+	// the shelf the tabs hang from runs to the editor's right edge
+	if fill := w - (total - off); fill > 0 {
+		lines[len(lines)-1] += dimStyle.Render(strings.Repeat("─", fill))
 	}
 	return lines
 }
@@ -1504,6 +1520,17 @@ func (m *Model) scrollIDERegion(msg tea.MouseMsg, up bool) {
 // clickIDE handles a click inside the pane: tabs and tree rows select and
 // open, a click in the file half moves the cursor to that line.
 func (m Model) clickIDE(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if b := m.ideBuf(); b != nil && m.clicked(msg, ideTabCloseZoneID()) {
+		confirm := m.ideConfirm
+		m.ideConfirm = ""
+		if b.dirty && confirm != "close" {
+			m.ideConfirm = "close"
+			m.err = errors.New("unsaved edits — ✕ again closes and drops them, ctrl+s saves")
+			return m.focusPane(paneIDE)
+		}
+		m.closeIDEBuf(m.ideCur)
+		return m.focusPane(paneIDE)
+	}
 	for i := range m.ideBufs {
 		if m.clicked(msg, ideTabZoneID(i)) {
 			m.activateIDEBuf(i)
