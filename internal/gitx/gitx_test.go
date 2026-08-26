@@ -250,3 +250,45 @@ func TestCommitDiff(t *testing.T) {
 		t.Errorf("the root commit's patch should show README.md, got:\n%s", diff)
 	}
 }
+
+func TestChangedLines(t *testing.T) {
+	dir := tempRepo(t)
+
+	// commit a file, then rewrite one line and append two
+	base := "one\ntwo\nthree\n"
+	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte(base), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, dir, "add", "f.txt")
+	mustGit(t, dir, "commit", "-m", "f")
+
+	edited := "one\nTWO\nthree\nfour\nfive\n"
+	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte(edited), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	marks, err := ChangedLines(dir, "f.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[int]rune{1: '~', 3: '+', 4: '+'}
+	if len(marks) != len(want) {
+		t.Fatalf("marks = %v, want %v", marks, want)
+	}
+	for line, mark := range want {
+		if marks[line] != mark {
+			t.Errorf("line %d marked %q, want %q (all: %v)", line, marks[line], mark, marks)
+		}
+	}
+
+	// an untracked file is new throughout
+	if err := os.WriteFile(filepath.Join(dir, "new.txt"), []byte("a\nb\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	marks, err = ChangedLines(dir, "new.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(marks) != 2 || marks[0] != '+' || marks[1] != '+' {
+		t.Errorf("untracked marks = %v, want both lines '+'", marks)
+	}
+}
