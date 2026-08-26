@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Hot-reload treeline: rebuild and restart it whenever a .go file changes.
+#
+# Run it from whichever repo you want treeline pointed at — treeline works
+# on the current directory, and the sources watched and run are the ones
+# this script sits in, so each treeline worktree's copy hot-reloads that
+# worktree's code:
+#
+#   ~/dev/treeline/.worktrees/fix-ide/scripts/hot-reload
+#
+# Needs watchexec (brew install watchexec).
+set -euo pipefail
+
+src="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+if ! command -v watchexec >/dev/null; then
+  echo "watchexec is missing — brew install watchexec" >&2
+  exit 1
+fi
+
+# go may only be pinned inside the treeline repo (mise), so resolve it from
+# there — the script then works from any directory.
+go_bin="$(command -v go || true)"
+if [ -z "$go_bin" ] && command -v mise >/dev/null; then
+  go_bin="$(mise --cd "$src" which go 2>/dev/null || true)"
+fi
+if [ -z "$go_bin" ]; then
+  echo "no go toolchain found (install go, or mise with the repo's go pin)" >&2
+  exit 1
+fi
+
+# build in the source worktree, run the binary here — `go run $src` can't
+# resolve the module from an unrelated directory
+bin="$(mktemp -d)/treeline"
+export TREELINE_HR_SRC="$src" TREELINE_HR_BIN="$bin" TREELINE_HR_GO="$go_bin"
+
+echo "watching $src — treeline runs against $PWD" >&2
+exec watchexec --watch "$src" --exts go --restart --stop-signal SIGTERM \
+  '"$TREELINE_HR_GO" build -C "$TREELINE_HR_SRC" -o "$TREELINE_HR_BIN" . && exec "$TREELINE_HR_BIN"'
