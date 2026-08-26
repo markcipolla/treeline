@@ -42,6 +42,7 @@ const (
 	ideInputNone = iota
 	ideInputFilter
 	ideInputFind
+	ideInputGrep
 	ideInputNew
 	ideInputRename
 )
@@ -65,6 +66,13 @@ const (
 	ideFilterMaxHits  = 200
 	ideFilterMaxWalk  = 20000
 	ideFilterMaxDepth = 16
+)
+
+// caps on the worktree search, so a one-letter query in a monorepo returns a
+// list worth reading instead of every line in the repo
+const (
+	ideGrepMaxFiles   = 200
+	ideGrepMaxMatches = 1000
 )
 
 // ideEntry is one visible row of the explorer tree.
@@ -92,9 +100,10 @@ type ideBuf struct {
 	modTime  time.Time
 }
 
-func ideZoneID(i int) string    { return "ide:t:" + strconv.Itoa(i) }
-func ideTabZoneID(i int) string { return "ide:tab:" + strconv.Itoa(i) }
-func ideTabCloseZoneID() string { return "ide:tabx" }
+func ideZoneID(i int) string     { return "ide:t:" + strconv.Itoa(i) }
+func ideGrepZoneID(i int) string { return "ide:g:" + strconv.Itoa(i) }
+func ideTabZoneID(i int) string  { return "ide:tab:" + strconv.Itoa(i) }
+func ideTabCloseZoneID() string  { return "ide:tabx" }
 
 // ideBuf is the active tab's buffer, nil with nothing open.
 func (m *Model) ideBuf() *ideBuf {
@@ -131,6 +140,7 @@ func (m *Model) resetIDE(dir string) {
 	m.ideFocus = ideFocusTree
 	m.closeIDEInput()
 	m.ideFilter, m.ideFindQ, m.ideFindHits = "", "", nil
+	m.clearIDEGrep()
 	m.ideConfirm = ""
 	if dir != "" {
 		m.refreshIDETree()
@@ -670,6 +680,152 @@ func loadIDEGutterCmd(dir, rel string) tea.Cmd {
 	}
 }
 
+// ---- worktree search ----
+
+// ideGrepRow is one row of the results list: a file header, or one matching
+// line under it.
+type ideGrepRow struct {
+	rel  string
+	line int    // 1-based; 0 on a header
+	text string // the matching line; the match count on a header
+	hdr  bool
+}
+
+// ideGrepMsg carries a finished search back to the model. The query rides
+// along so a stale result — the user kept typing — can be dropped.
+type ideGrepMsg struct {
+	dir   string
+	query string
+	files []gitx.GrepFile
+	more  bool
+	err   error
+}
+
+// grepIDECmd runs the worktree search off the update loop: git grep over a
+// monorepo is far too slow to block a keystroke on.
+func grepIDECmd(dir, query string) tea.Cmd {
+	if dir == "" || strings.TrimSpace(query) == "" {
+		return nil
+	}
+	return func() tea.Msg {
+		files, more, err := gitx.Grep(dir, query, ideGrepMaxFiles, ideGrepMaxMatches)
+		return ideGrepMsg{dir: dir, query: query, files: files, more: more, err: err}
+	}
+}
+
+// ideGrepActive reports whether the results list has taken over the tree half.
+func (m *Model) ideGrepActive() bool { return m.ideGrepQ != "" }
+
+// rebuildIDEGrepRows flattens the grouped hits into the visible list: a header
+// per file, its matches beneath unless the file is folded.
+func (m *Model) rebuildIDEGrepRows() {
+	sel := ""
+	if m.ideGrepSel < len(m.ideGrepRows) {
+		r := m.ideGrepRows[m.ideGrepSel]
+		sel = r.rel + ":" + strconv.Itoa(r.line)
+	}
+	m.ideGrepRows = nil
+	for _, f := range m.ideGrepFiles {
+		m.ideGrepRows = append(m.ideGrepRows, ideGrepRow{
+			rel:  f.Path,
+			text: strconv.Itoa(len(f.Matches)),
+			hdr:  true,
+		})
+		if m.ideGrepFold[f.Path] {
+			continue
+		}
+		for _, hit := range f.Matches {
+			m.ideGrepRows = append(m.ideGrepRows, ideGrepRow{
+				rel:  f.Path,
+				line: hit.Line,
+				text: hit.Text,
+			})
+		}
+	}
+	if sel != "" {
+		for i, r := range m.ideGrepRows {
+			if r.rel+":"+strconv.Itoa(r.line) == sel {
+				m.ideGrepSel = i
+				break
+			}
+		}
+	}
+	m.ideGrepSel = clampIdx(m.ideGrepSel, len(m.ideGrepRows))
+	m.settleIDEGrep()
+}
+
+// clearIDEGrep puts the file tree back.
+func (m *Model) clearIDEGrep() {
+	m.ideGrepQ = ""
+	m.ideGrepFiles, m.ideGrepRows = nil, nil
+	m.ideGrepFold = map[string]bool{}
+	m.ideGrepSel, m.ideGrepScrol = 0, 0
+	m.ideGrepMore, m.ideGrepping = false, false
+}
+
+// settleIDEGrep keeps the selected result inside the list's window.
+func (m *Model) settleIDEGrep() {
+	h := m.ideContentH()
+	if m.ideGrepSel < m.ideGrepScrol {
+		m.ideGrepScrol = m.ideGrepSel
+	}
+	if m.ideGrepSel >= m.ideGrepScrol+h {
+		m.ideGrepScrol = m.ideGrepSel - h + 1
+	}
+}
+
+func (m *Model) moveIDEGrepSel(n int) {
+	m.ideGrepSel = clampIdx(m.ideGrepSel+n, len(m.ideGrepRows))
+	m.settleIDEGrep()
+}
+
+// openIDEGrepSel acts on the selected result: a header folds, a match opens
+// its file at that line.
+func (m *Model) openIDEGrepSel() tea.Cmd {
+	if m.ideGrepSel >= len(m.ideGrepRows) {
+		return nil
+	}
+	r := m.ideGrepRows[m.ideGrepSel]
+	if r.hdr {
+		m.ideGrepFold[r.rel] = !m.ideGrepFold[r.rel]
+		m.rebuildIDEGrepRows()
+		return nil
+	}
+	return m.openIDEFileAt(r.rel, r.line)
+}
+
+// jumpIDEGrep moves to the next (dir>0) or previous match row — headers
+// skipped — and opens it, so a whole result set can be walked with one key.
+func (m *Model) jumpIDEGrep(dir int) tea.Cmd {
+	for i := m.ideGrepSel + dir; i >= 0 && i < len(m.ideGrepRows); i += dir {
+		if m.ideGrepRows[i].hdr {
+			continue
+		}
+		m.ideGrepSel = i
+		m.settleIDEGrep()
+		return m.openIDEFileAt(m.ideGrepRows[i].rel, m.ideGrepRows[i].line)
+	}
+	return nil
+}
+
+// openIDEFileAt opens a file and parks the cursor on one line. The worktree
+// query is handed to the in-file find as well, so the lines that matched are
+// marked in the file view the result just jumped into.
+func (m *Model) openIDEFileAt(rel string, line int) tea.Cmd {
+	cmd := m.openIDEFile(rel)
+	b := m.ideBuf()
+	if b == nil || b.rel != rel {
+		return cmd // the open failed; m.err already says why
+	}
+	if m.ideGrepQ != "" {
+		m.ideFindQ = m.ideGrepQ
+		m.recomputeIDEFind()
+	}
+	b.cursor = clampIdx(line-1, len(b.hl))
+	m.settleIDEView()
+	return cmd
+}
+
 // ---- find ----
 
 // recomputeIDEFind rebuilds the match list for the active buffer.
@@ -782,6 +938,25 @@ func (m Model) idePaneContent(w, h int) (string, string) {
 	case m.ideFindQ != "" && cur != nil:
 		title += dimStyle.Render(fmt.Sprintf(" · ⌕%s %d", m.ideFindQ, len(m.ideFindHits)))
 	}
+	if m.ideGrepActive() {
+		switch {
+		case m.ideGrepping:
+			title += dimStyle.Render(" · ⌕⌕" + m.ideGrepQ + " searching…")
+		default:
+			n := 0
+			for _, f := range m.ideGrepFiles {
+				n += len(f.Matches)
+			}
+			sum := fmt.Sprintf(" · ⌕⌕%s %d in %d file", m.ideGrepQ, n, len(m.ideGrepFiles))
+			if len(m.ideGrepFiles) != 1 {
+				sum += "s"
+			}
+			if m.ideGrepMore {
+				sum += "+"
+			}
+			title += dimStyle.Render(sum)
+		}
+	}
 	if w < 4 || h < 1 {
 		return title, ""
 	}
@@ -799,6 +974,9 @@ func (m Model) idePaneContent(w, h int) (string, string) {
 	ch := m.ideContentH()
 	treeW := m.ideTreeWidth(w)
 	tree := m.ideTreeRows(treeW, ch)
+	if m.ideGrepActive() {
+		tree = m.ideGrepRowsView(treeW, ch)
+	}
 	// the divider between the halves wears the pane's chrome: it continues
 	// into the title rule and bottom border (see idePart), and the whole
 	// line follows focus with them
@@ -848,6 +1026,8 @@ func ideZeroState(w, h int) string {
 		"",
 		hint("/", "filters the tree"),
 		"",
+		hint("ctrl+g", "searches every file"),
+		"",
 		hint("a", "makes a file"),
 	)
 	return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center,
@@ -877,7 +1057,7 @@ func (m Model) ideTabBar(w int) []string {
 	}
 	parts := make([]string, 0, len(m.ideBufs))
 	for i, b := range m.ideBufs {
-		label := filepath.Base(b.rel)
+		label := m.ideIconCell(b.rel, false, false) + filepath.Base(b.rel)
 		if b.dirty {
 			label += " ●"
 		}
@@ -949,12 +1129,13 @@ func (m Model) ideTreeRows(w, h int) []string {
 		if m.ideFilter != "" {
 			indent = 0
 		}
-		line := strings.Repeat("  ", indent) + marker + name
+		icon := m.ideIconCell(e.rel, e.dir, m.ideExpanded[e.rel])
+		line := strings.Repeat("  ", indent) + marker + icon + name
 		switch {
 		case i == m.ideSel && m.pane == paneIDE && m.ideFocus == ideFocusTree:
-			line = cursorStyle.Render(padRight(truncate(line, w-1), w-1))
+			line = cursorStyle.Render(padCells(truncate(line, w-1), w-1))
 		case i == m.ideSel:
-			line = okStyle.Render(padRight(truncate(line, w-1), w-1))
+			line = okStyle.Render(padCells(truncate(line, w-1), w-1))
 		case e.dir:
 			line = truncate(line, w)
 		default:
@@ -969,6 +1150,112 @@ func (m Model) ideTreeRows(w, h int) []string {
 	return rows
 }
 
+// ideGrepRowsView draws the results list in the tree half: one header per
+// file with its match count, the matching lines beneath it as line number and
+// text, with the query picked out so the eye lands on the hit.
+//
+// Each row is built twice — plain and styled. truncate and padRight count
+// bytes and runes, not display cells, so they only ever see the plain form;
+// the selected row is padded plain and then rendered in one go, exactly as
+// ideTreeRows does it.
+func (m Model) ideGrepRowsView(w, h int) []string {
+	if m.ideGrepping {
+		return []string{dimStyle.Render(truncate("searching "+m.ideGrepQ+"…", w))}
+	}
+	if len(m.ideGrepRows) == 0 {
+		return []string{
+			dimStyle.Render("no matches"),
+			"",
+			dimStyle.Render(truncate("nothing here holds “"+m.ideGrepQ+"”", w)),
+			"",
+			dimStyle.Render(truncate("esc restores the tree", w)),
+		}
+	}
+	focused := m.pane == paneIDE && m.ideFocus == ideFocusTree
+	start := clampIdx(m.ideGrepScrol, len(m.ideGrepRows))
+	var rows []string
+	for i := start; i < len(m.ideGrepRows) && i < start+h; i++ {
+		r := m.ideGrepRows[i]
+		selected := i == m.ideGrepSel
+		// the selection paints the whole row one colour, so it needs the plain
+		// text; an unselected row is styled piece by piece
+		avail := w
+		if selected {
+			avail = w - 1
+		}
+		var plain, styled string
+		if r.hdr {
+			marker := "▾ "
+			if m.ideGrepFold[r.rel] {
+				marker = "▸ "
+			}
+			count := " " + r.text
+			icon := m.ideIconCell(r.rel, false, false)
+			room := avail - lipgloss.Width(marker) - lipgloss.Width(icon) - lipgloss.Width(count)
+			name := truncate(r.rel, room)
+			plain = marker + icon + name + count
+			styled = marker + icon + name + dimStyle.Render(count)
+		} else {
+			num := fmt.Sprintf("%5d ", r.line)
+			body, at := ideGrepWindow(strings.TrimSpace(r.text), m.ideGrepQ,
+				avail-lipgloss.Width(num))
+			plain = num + body
+			styled = dimStyle.Render(num) + ideGrepPaint(body, at, len(m.ideGrepQ))
+		}
+		line := styled
+		switch {
+		case selected && focused:
+			line = cursorStyle.Render(padCells(plain, w-1))
+		case selected:
+			line = okStyle.Render(padCells(plain, w-1))
+		}
+		rows = append(rows, m.zones.Mark(ideGrepZoneID(i), line))
+	}
+	if m.ideGrepMore && len(rows) < h {
+		rows = append(rows, dimStyle.Render(truncate("…capped — narrow the search", w)))
+	}
+	return rows
+}
+
+// ideGrepWindow fits a matching line into w cells and reports where the query
+// sits inside what is left, or -1 when it fell outside. A hit far to the right
+// of a long line slides the window along, a little context kept ahead of it.
+func ideGrepWindow(text, query string, w int) (string, int) {
+	if w < 1 {
+		return "", -1
+	}
+	at := -1
+	if query != "" {
+		at = strings.Index(strings.ToLower(text), strings.ToLower(query))
+	}
+	if at < 0 {
+		return truncate(text, w), -1
+	}
+	if at+len(query) > w {
+		cut := at - w/3
+		if cut < 0 {
+			cut = 0
+		}
+		text, at = "…"+text[cut:], at-cut+1
+	}
+	out := truncate(text, w)
+	if at+len(query) > len(out) {
+		return out, -1 // the ellipsis ate the hit
+	}
+	return out, at
+}
+
+// ideGrepPaint colours a windowed line, the match at byte offset at picked out
+// of it. at < 0 leaves the line dim.
+func ideGrepPaint(text string, at, n int) string {
+	if at < 0 || at+n > len(text) {
+		return dimStyle.Render(text)
+	}
+	return dimStyle.Render(text[:at]) +
+		searchHitStyle.Render(text[at:at+n]) +
+		dimStyle.Render(text[at+n:])
+}
+
 // ideEditorRows is the file half under the tab bar: the highlighted buffer
 // behind a gutter of git marks and line numbers. Editing renders the same
 // rows — the hidden textarea only keeps the state — with a block cursor
@@ -981,7 +1268,12 @@ func (m Model) ideEditorRows(w, h int) []string {
 	}
 	lines := b.hl
 	numW := len(strconv.Itoa(len(lines)))
-	avail := w - numW - 2
+	// the ruler gives up its column when the pane is too narrow to spare one
+	rulerW := ideRulerW
+	if w-numW-2-rulerW < 4 {
+		rulerW = 0
+	}
+	avail := w - numW - 2 - rulerW
 	if avail < 1 {
 		avail = 1
 	}
@@ -1000,29 +1292,147 @@ func (m Model) ideEditorRows(w, h int) []string {
 	for _, hit := range m.ideFindHits {
 		hits[hit] = true
 	}
+	ruler := ideRuler(b, h)
+	// every row runs the full width so the ruler lands in one column, and the
+	// view is filled to its height so the track reaches the bottom of a file
+	// shorter than the window
+	body := w - rulerW
 	var rows []string
-	for i := start; i < len(lines) && i < start+h; i++ {
-		mark := " "
-		switch b.gutter[i] {
-		case '+':
-			mark = okStyle.Render("▎")
-		case '~':
-			mark = warnStyle.Render("▎")
+	for r := 0; r < h; r++ {
+		i := start + r
+		var row string
+		if i < len(lines) {
+			mark := " "
+			switch b.gutter[i] {
+			case '+':
+				mark = okStyle.Render("▎")
+			case '~':
+				mark = warnStyle.Render("▎")
+			}
+			g := dimStyle
+			switch {
+			case i == curRow, i == b.cursor && !m.ideEditing && m.pane == paneIDE && m.ideFocus == ideFocusFile:
+				g = cursorStyle
+			case hits[i]:
+				g = okStyle
+			}
+			line := ansi.Cut(lines[i], hoff, hoff+avail)
+			if i == curRow && curRow < len(plain) {
+				line = overlayIDECursor(line, plain[i], curCol, hoff)
+			}
+			row = mark + g.Render(fmt.Sprintf("%*d ", numW, i+1)) + line
 		}
-		g := dimStyle
-		switch {
-		case i == curRow, i == b.cursor && !m.ideEditing && m.pane == paneIDE && m.ideFocus == ideFocusFile:
-			g = cursorStyle
-		case hits[i]:
-			g = okStyle
+		if rulerW > 0 {
+			rows = append(rows, padCells(row, body)+ruler[r])
+			continue
 		}
-		line := ansi.Cut(lines[i], hoff, hoff+avail)
-		if i == curRow && curRow < len(plain) {
-			line = overlayIDECursor(line, plain[i], curCol, hoff)
+		if i >= len(lines) {
+			break // nothing to draw and no track to carry down the page
 		}
-		rows = append(rows, mark+g.Render(fmt.Sprintf("%*d ", numW, i+1))+line)
+		rows = append(rows, row)
 	}
 	return rows
+}
+
+// padCells pads a rendered string out to w display cells, escapes and
+// double-width runes accounted for. A string already at or over the width is
+// left alone — truncating a highlighted line here would shear its escapes.
+//
+// The selection bands need this rather than padRight: padRight counts bytes,
+// so a row carrying a multi-byte glyph — the fold markers, the file icons —
+// would stop its background short of the column's edge.
+func padCells(s string, w int) string {
+	if n := w - lipgloss.Width(s); n > 0 {
+		return s + strings.Repeat(" ", n)
+	}
+	return s
+}
+
+// ideRulerW is the scroll ruler's column: one cell on the file view's right.
+const ideRulerW = 1
+
+// ideRulerCell is one cell of the ruler, before it is styled: which diff
+// marks the file lines it stands for carry, and whether the window covers it.
+type ideRulerCell struct {
+	added   bool
+	changed bool
+	thumb   bool
+}
+
+// ideRulerCells lays the whole file out on a track h cells tall — the
+// geometry of the ruler, with no styling on it.
+//
+// Two things ride on the track. The thumb marks the rows the window is
+// showing, so the position in a long file is legible at a glance. The diff
+// marks come from the same gutter data as the per-line marks, which means a
+// change further down the file announces itself without scrolling there.
+//
+// With the file shorter than the window the thumb covers the whole track —
+// "all of it is on screen" — rather than vanishing, so the column never
+// reflows the code beside it.
+func ideRulerCells(b *ideBuf, h int) []ideRulerCell {
+	if h < 1 {
+		return nil
+	}
+	total := len(b.hl)
+	thumbLo, thumbHi := 0, h
+	if total > h {
+		thumbLo = b.scrollY * h / total
+		thumbHi = (b.scrollY + h) * h / total
+		if thumbHi <= thumbLo {
+			thumbHi = thumbLo + 1
+		}
+		if thumbHi > h {
+			thumbHi = h
+		}
+	}
+	cells := make([]ideRulerCell, h)
+	for r := 0; r < h; r++ {
+		// the file lines this cell stands for
+		lo, hi := r, r+1
+		if total > h {
+			lo, hi = r*total/h, (r+1)*total/h
+			if hi <= lo {
+				hi = lo + 1
+			}
+		}
+		c := ideRulerCell{thumb: r >= thumbLo && r < thumbHi}
+		for i := lo; i < hi && i < total; i++ {
+			switch b.gutter[i] {
+			case '+':
+				c.added = true
+			case '~':
+				c.changed = true
+			}
+		}
+		cells[r] = c
+	}
+	return cells
+}
+
+// ideRuler renders the track: the diff in the glyph's colour, matching the
+// gutter's accent-for-added and amber-for-changed, and the thumb as a
+// background band behind it so the two never compete for the same cell.
+func ideRuler(b *ideBuf, h int) []string {
+	cells := ideRulerCells(b, h)
+	out := make([]string, len(cells))
+	for i, c := range cells {
+		// a cell standing for many lines can hold both; the amber reads as
+		// "something moved here", which is the question the ruler answers
+		glyph, fg := "│", subtle
+		switch {
+		case c.changed:
+			glyph, fg = "█", warnCol
+		case c.added:
+			glyph, fg = "█", accent
+		}
+		st := lipgloss.NewStyle().Foreground(fg)
+		if c.thumb {
+			st = st.Background(btnBg)
+		}
+		out[i] = st.Render(glyph)
+	}
+	return out
 }
 
 // overlayIDECursor draws a block cursor into an already-windowed highlighted
@@ -1043,6 +1453,19 @@ func overlayIDECursor(line, plain string, col, hoff int) string {
 // ---- keyboard ----
 
 func (m Model) keyIDE(k tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// the two searches are caught before anything else in the pane can claim
+	// the key, so they work the same from the tree, a file, and mid-edit. The
+	// path prompts are the exception: they are modal and short-lived, and
+	// hijacking one would silently throw away a half-typed filename.
+	askingPath := m.ideInputKind == ideInputNew || m.ideInputKind == ideInputRename
+	if !askingPath {
+		switch k.String() {
+		case "ctrl+f":
+			return m.openIDESearch(ideInputFind)
+		case "ctrl+g":
+			return m.openIDESearch(ideInputGrep)
+		}
+	}
 	if m.ideEditing {
 		return m.keyIDEEditing(k)
 	}
@@ -1051,23 +1474,47 @@ func (m Model) keyIDE(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	confirm := m.ideConfirm
 	m.ideConfirm = "" // any key but the confirming one drops the question
+	if m.ideGrepActive() && m.ideFocus == ideFocusTree {
+		return m.keyIDEGrep(k)
+	}
 	if m.ideFocus == ideFocusFile && m.ideBuf() != nil {
 		return m.keyIDEFile(k, confirm)
 	}
 	return m.keyIDETree(k, confirm)
 }
 
+// openIDESearch opens the ask-line for one of the two searches. Editing is
+// left first — the buffer and the ask-line cannot both hold the keys — and a
+// query already typed into the other search carries over, so landing in the
+// wrong scope costs one keystroke rather than retyping.
+func (m Model) openIDESearch(kind int) (tea.Model, tea.Cmd) {
+	if m.ideEditing {
+		m.leaveIDEEditing()
+	}
+	seed := m.ideFindQ
+	if kind == ideInputGrep {
+		seed = m.ideGrepQ
+	}
+	if m.ideInputKind == ideInputFind || m.ideInputKind == ideInputGrep {
+		seed = m.ideInput.Value() // switching scope keeps what is typed
+	}
+	if kind == ideInputFind {
+		if m.ideBuf() == nil {
+			m.err = errors.New("no file open — ctrl+g searches the whole worktree")
+			return m, nil
+		}
+		m.ideFocus = ideFocusFile
+		return m.openIDEInput(ideInputFind, "⌕ ", "find in this file…", seed)
+	}
+	m.ideFocus = ideFocusTree
+	return m.openIDEInput(ideInputGrep, "⌕⌕ ", "search every file in the worktree…", seed)
+}
+
 func (m Model) keyIDEEditing(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	b := m.ideBuf()
 	switch k.String() {
 	case "esc":
-		m.ideEditing = false
-		m.ideEditor.Blur()
-		m.stashIDEBuf()
-		b.hl = highlightSource(b.val, b.rel)
-		b.cursor = clampIdx(m.ideEditor.Line(), len(b.hl))
-		m.settleIDEView()
-		m.recomputeIDEFind()
+		m.leaveIDEEditing()
 		return m, nil
 	case "ctrl+s":
 		return m, m.saveIDEBuf(false)
@@ -1082,6 +1529,25 @@ func (m Model) keyIDEEditing(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	b.cursor = clampIdx(m.ideEditor.Line(), len(b.hl))
 	m.settleIDEView()
 	return m, cmd
+}
+
+// leaveIDEEditing drops out of the editor back to the read-only file view,
+// settling the buffer: the text is stashed, the colors are redone in full
+// (live highlighting may have been skipped under the size budget), and the
+// find hits are recomputed against whatever the edit left behind.
+func (m *Model) leaveIDEEditing() {
+	b := m.ideBuf()
+	if b == nil {
+		m.ideEditing = false
+		return
+	}
+	m.ideEditing = false
+	m.ideEditor.Blur()
+	m.stashIDEBuf()
+	b.hl = highlightSource(b.val, b.rel)
+	b.cursor = clampIdx(m.ideEditor.Line(), len(b.hl))
+	m.settleIDEView()
+	m.recomputeIDEFind()
 }
 
 // liveHighlight is highlightSource under a budget: a buffer too large to
@@ -1133,7 +1599,7 @@ func (m Model) keyIDEFile(k tea.KeyMsg, confirm string) (tea.Model, tea.Cmd) {
 	case "]", "ctrl+right":
 		m.switchIDEBuf(1)
 		return m, nil
-	case "/", "ctrl+f":
+	case "/":
 		return m.openIDEInput(ideInputFind, "⌕ ", "find in this file…", m.ideFindQ)
 	case "n":
 		m.jumpIDEFind(1)
@@ -1153,6 +1619,56 @@ func (m Model) keyIDEFile(k tea.KeyMsg, confirm string) (tea.Model, tea.Cmd) {
 	case "G", "end":
 		b.cursor = len(b.hl) - 1
 		m.settleIDEView()
+	}
+	return m, nil
+}
+
+// keyIDEGrep works the results list while it stands in for the tree.
+func (m Model) keyIDEGrep(k tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch k.String() {
+	case "up", "k":
+		m.moveIDEGrepSel(-1)
+	case "down", "j":
+		m.moveIDEGrepSel(1)
+	case "enter", "l", "right":
+		return m, m.openIDEGrepSel()
+	case "n":
+		return m, m.jumpIDEGrep(1)
+	case "N":
+		return m, m.jumpIDEGrep(-1)
+	case "h", "left":
+		// fold this file, from a match row as well as its header
+		if m.ideGrepSel < len(m.ideGrepRows) {
+			rel := m.ideGrepRows[m.ideGrepSel].rel
+			m.ideGrepFold[rel] = true
+			m.rebuildIDEGrepRows()
+			for i, r := range m.ideGrepRows {
+				if r.rel == rel && r.hdr {
+					m.ideGrepSel = i
+					m.settleIDEGrep()
+					break
+				}
+			}
+		}
+	case "g", "home":
+		m.ideGrepSel = 0
+		m.settleIDEGrep()
+	case "G", "end":
+		m.ideGrepSel = clampIdx(len(m.ideGrepRows)-1, len(m.ideGrepRows))
+		m.settleIDEGrep()
+	case "pgup":
+		m.moveIDEGrepSel(-m.ideContentH())
+	case "pgdown":
+		m.moveIDEGrepSel(m.ideContentH())
+	case "esc":
+		m.clearIDEGrep()
+		m.refreshIDETree()
+	case "tab":
+		if m.ideBuf() != nil {
+			m.ideFocus = ideFocusFile
+		}
+	case "ctrl+s":
+		return m, m.saveIDEBuf(false)
 	}
 	return m, nil
 }
@@ -1246,6 +1762,9 @@ func (m Model) keyIDEInput(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.refreshIDETree()
 		case ideInputFind:
 			m.ideFindQ, m.ideFindHits = "", nil
+		case ideInputGrep:
+			m.clearIDEGrep()
+			m.refreshIDETree()
 		}
 		return m, nil
 	case "enter":
@@ -1256,6 +1775,8 @@ func (m Model) keyIDEInput(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// the filter stays applied; enter moves to picking from the list
 		case ideInputFind:
 			m.jumpIDEFind(1)
+		case ideInputGrep:
+			return m, m.startIDEGrep(val)
 		case ideInputNew:
 			return m, m.createIDEEntry(val)
 		case ideInputRename:
@@ -1277,6 +1798,38 @@ func (m Model) keyIDEInput(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.recomputeIDEFind()
 	}
 	return m, cmd
+}
+
+// startIDEGrep kicks off a worktree search. Unlike the in-file find this one
+// waits for enter: every keystroke would be a git grep over the whole tree.
+func (m *Model) startIDEGrep(query string) tea.Cmd {
+	if query == "" {
+		m.clearIDEGrep()
+		m.refreshIDETree()
+		return nil
+	}
+	m.clearIDEGrep()
+	m.ideGrepQ = query
+	m.ideGrepping = true
+	m.ideFocus = ideFocusTree
+	return grepIDECmd(m.ideFor, query)
+}
+
+// applyIDEGrepMsg takes a finished search, ignoring one whose query or
+// worktree has moved on since it was started.
+func (m *Model) applyIDEGrepMsg(msg ideGrepMsg) {
+	if msg.dir != m.ideFor || msg.query != m.ideGrepQ {
+		return
+	}
+	m.ideGrepping = false
+	if msg.err != nil {
+		m.err = msg.err
+		m.clearIDEGrep()
+		return
+	}
+	m.ideGrepFiles, m.ideGrepMore = msg.files, msg.more
+	m.ideGrepSel, m.ideGrepScrol = 0, 0
+	m.rebuildIDEGrepRows()
 }
 
 // ---- file operations ----
@@ -1488,6 +2041,12 @@ func (m *Model) scrollIDERegion(msg tea.MouseMsg, up bool) {
 		step = -3
 	}
 	switch {
+	case overTree && m.ideGrepActive():
+		max := len(m.ideGrepRows) - m.ideContentH()
+		if max < 0 {
+			max = 0
+		}
+		m.ideGrepScrol = clampW(m.ideGrepScrol+step, 0, max)
 	case overTree:
 		max := len(m.ideTree) - m.ideContentH()
 		if max < 0 {
@@ -1536,6 +2095,15 @@ func (m Model) clickIDE(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			m.activateIDEBuf(i)
 			m.ideFocus = ideFocusFile
 			return m.focusPane(paneIDE)
+		}
+	}
+	for i := range m.ideGrepRows {
+		if m.clicked(msg, ideGrepZoneID(i)) {
+			m.ideGrepSel = i
+			m.ideFocus = ideFocusTree
+			cmd := m.openIDEGrepSel()
+			mm, fcmd := m.focusPane(paneIDE)
+			return mm, tea.Batch(cmd, fcmd)
 		}
 	}
 	for i := range m.ideTree {

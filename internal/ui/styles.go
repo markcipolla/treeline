@@ -41,6 +41,9 @@ var (
 	cursorStyle = lipgloss.NewStyle().Foreground(accent).Bold(true)
 	dimStyle    = lipgloss.NewStyle().Foreground(subtle)
 
+	// searchHitStyle picks the query out of a search result's line
+	searchHitStyle = lipgloss.NewStyle().Foreground(onAcc).Background(accent)
+
 	btnStyle        = lipgloss.NewStyle().Foreground(btnFg).Background(btnBg).Padding(0, 2)
 	btnPrimaryStyle = lipgloss.NewStyle().Foreground(onAcc).Background(accent).Bold(true).Padding(0, 2)
 )

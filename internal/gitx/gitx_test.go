@@ -292,3 +292,141 @@ func TestChangedLines(t *testing.T) {
 		t.Errorf("untracked marks = %v, want both lines '+'", marks)
 	}
 }
+
+// TestGrepGroupsAndParses: Grep finds a case-insensitive substring across
+// tracked and untracked files, groups the hits by file, and reports 1-based
+// line numbers with the matching text.
+func TestGrepGroupsAndParses(t *testing.T) {
+	dir := tempRepo(t)
+	if err := os.WriteFile(filepath.Join(dir, "a.go"),
+		[]byte("package a\n\nfunc Needle() {}\nvar x = 1\nfunc needle2() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, dir, "add", "a.go")
+	mustGit(t, dir, "commit", "-m", "a")
+	// untracked, so --untracked is what brings it in
+	if err := os.WriteFile(filepath.Join(dir, "b.go"),
+		[]byte("// NEEDLE in a comment\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	files, more, err := Grep(dir, "needle", 100, 100)
+	if err != nil {
+		t.Fatalf("Grep: %v", err)
+	}
+	if more {
+		t.Error("nothing should have been capped")
+	}
+	byPath := map[string][]GrepMatch{}
+	for _, f := range files {
+		byPath[f.Path] = f.Matches
+	}
+	if len(byPath) != 2 {
+		t.Fatalf("want hits in 2 files, got %d: %+v", len(byPath), files)
+	}
+	a := byPath["a.go"]
+	if len(a) != 2 {
+		t.Fatalf("a.go: want 2 matches, got %+v", a)
+	}
+	if a[0].Line != 3 || !strings.Contains(a[0].Text, "func Needle()") {
+		t.Errorf("a.go first match = %+v, want line 3 with the func", a[0])
+	}
+	if a[1].Line != 5 {
+		t.Errorf("a.go second match on line %d, want 5", a[1].Line)
+	}
+	if b := byPath["b.go"]; len(b) != 1 || b[0].Line != 1 {
+		t.Errorf("b.go matches = %+v, want one on line 1", b)
+	}
+}
+
+// TestGrepNoMatchesIsNotAnError: git grep exits 1 when nothing matches, which
+// must read as an empty result rather than a failure.
+func TestGrepNoMatchesIsNotAnError(t *testing.T) {
+	dir := tempRepo(t)
+	files, more, err := Grep(dir, "zzz-nothing-holds-this-zzz", 100, 100)
+	if err != nil {
+		t.Fatalf("no matches should not error, got %v", err)
+	}
+	if len(files) != 0 || more {
+		t.Errorf("want no hits, got %+v more=%v", files, more)
+	}
+}
+
+// TestGrepFixedStringAndLeadingDash: the query is a literal, so regex
+// metacharacters match themselves and a leading dash is not read as a flag.
+func TestGrepFixedStringAndLeadingDash(t *testing.T) {
+	dir := tempRepo(t)
+	if err := os.WriteFile(filepath.Join(dir, "c.txt"),
+		[]byte("a.b\naxb\n--flaglike\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	files, _, err := Grep(dir, "a.b", 100, 100)
+	if err != nil {
+		t.Fatalf("Grep: %v", err)
+	}
+	if len(files) != 1 || len(files[0].Matches) != 1 || files[0].Matches[0].Line != 1 {
+		t.Errorf("a.b should match only the literal, got %+v", files)
+	}
+	files, _, err = Grep(dir, "--flaglike", 100, 100)
+	if err != nil {
+		t.Fatalf("leading-dash query: %v", err)
+	}
+	if len(files) != 1 || files[0].Matches[0].Line != 3 {
+		t.Errorf("--flaglike should match line 3, got %+v", files)
+	}
+}
+
+// TestGrepCaps: the caps bound both the files and the total matches, and say
+// so, so a one-letter query cannot return the whole repo.
+func TestGrepCaps(t *testing.T) {
+	dir := tempRepo(t)
+	for _, n := range []string{"f1.txt", "f2.txt", "f3.txt"} {
+		if err := os.WriteFile(filepath.Join(dir, n),
+			[]byte("hit\nhit\nhit\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	files, more, err := Grep(dir, "hit", 2, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 2 || !more {
+		t.Errorf("maxFiles=2: got %d files more=%v", len(files), more)
+	}
+	files, more, err = Grep(dir, "hit", 100, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	total := 0
+	for _, f := range files {
+		total += len(f.Matches)
+	}
+	if total != 4 || !more {
+		t.Errorf("maxMatches=4: got %d matches more=%v", total, more)
+	}
+}
+
+// TestGrepEmptyQuery: a blank query is a no-op, not a git invocation that
+// would match every line.
+func TestGrepEmptyQuery(t *testing.T) {
+	dir := tempRepo(t)
+	files, more, err := Grep(dir, "   ", 100, 100)
+	if err != nil || len(files) != 0 || more {
+		t.Errorf("blank query = %+v more=%v err=%v, want an empty no-op", files, more, err)
+	}
+}
+
+// TestParseGrepRecordNULDelimited: NUL delimiters mean a path holding a colon
+// still parses, and a malformed record is skipped rather than guessed at.
+func TestParseGrepRecordNULDelimited(t *testing.T) {
+	path, line, text, ok := parseGrepRecord("we:ird/pa th.go\x0042\x00\tcode := 1")
+	if !ok || path != "we:ird/pa th.go" || line != 42 || text != "\tcode := 1" {
+		t.Errorf("got %q %d %q ok=%v", path, line, text, ok)
+	}
+	if _, _, _, ok := parseGrepRecord("no-nuls-at-all"); ok {
+		t.Error("a record with no delimiters should not parse")
+	}
+	if _, _, _, ok := parseGrepRecord("path\x00notanumber\x00text"); ok {
+		t.Error("a non-numeric line number should not parse")
+	}
+}
