@@ -163,13 +163,21 @@ type Model struct {
 	ideCur       int             // the active tab
 	ideEditing   bool            // the textarea has the keys
 	ideEditor    textarea.Model
-	ideInput     textinput.Model // the pane's ask-line: filter, find, new, rename
+	ideInput     textinput.Model // the ask-line: filter, find, search, new, rename
 	ideInputKind int
-	ideFilter    string    // applied tree filter
-	ideFindQ     string    // in-file search query, kept for n/N
-	ideFindHits  []int     // lines of the active buffer matching it
-	ideConfirm   string    // pending destructive action awaiting a second press
-	ideSavedAt   time.Time // "saved ✓" flash
+	ideFilter    string          // applied tree filter
+	ideFindQ     string          // in-file search query, kept for n/N
+	ideFindHits  []int           // lines of the active buffer matching it
+	ideGrepQ     string          // worktree-wide search query; non-empty shows results
+	ideGrepFiles []gitx.GrepFile // hits grouped by file, as git found them
+	ideGrepRows  []ideGrepRow    // the visible results list, folds applied
+	ideGrepFold  map[string]bool // collapsed files in the results list
+	ideGrepSel   int             // cursor in the results list
+	ideGrepScrol int             // results window offset
+	ideGrepMore  bool            // a cap cut the results short
+	ideGrepping  bool            // a search is in flight
+	ideConfirm   string          // pending destructive action awaiting a second press
+	ideSavedAt   time.Time       // "saved ✓" flash
 
 	diffVP      viewport.Model
 	diffRaw     string
@@ -334,6 +342,7 @@ func New(cfg *config.Config, root string) Model {
 		ideEditor:     ideEditor,
 		ideInput:      newInput(""),
 		ideExpanded:   map[string]bool{},
+		ideGrepFold:   map[string]bool{},
 		seamDrag:      map[int][]int{},
 		dragSeam:      -1,
 		terms:         map[string]*claudeSession{},
@@ -584,6 +593,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.searchInput.SetSuggestions(sugs)
 		return m, nil
 
+	case ideGrepMsg:
+		m.applyIDEGrepMsg(msg)
+		return m, nil
 	case ideGutterMsg:
 		if msg.dir == m.ideFor {
 			for _, b := range m.ideBufs {

@@ -698,3 +698,452 @@ func TestIDETabStripScrolls(t *testing.T) {
 		t.Errorf("activating the first tab should scroll back:\n%s", strip)
 	}
 }
+
+// ctrlKey builds a control-key message the way bubbletea delivers it.
+func ctrlKey(t tea.KeyType) tea.KeyMsg { return tea.KeyMsg{Type: t} }
+
+// keyIDECmd is keyIDE keeping the command, for the flows that spawn one.
+func keyIDECmd(t *testing.T, m Model, k tea.KeyMsg) (Model, tea.Cmd) {
+	t.Helper()
+	mm, cmd := m.keyIDE(k)
+	return mm.(Model), cmd
+}
+
+// grepResult fakes a finished search landing back in the model.
+func grepResult(m Model, files ...gitx.GrepFile) Model {
+	m.applyIDEGrepMsg(ideGrepMsg{dir: m.ideFor, query: m.ideGrepQ, files: files})
+	return m
+}
+
+// TestIDECtrlFFromTree: ctrl+f opens the in-file find even with the tree
+// focused — it used to be reachable only from the file half.
+func TestIDECtrlFFromTree(t *testing.T) {
+	m := ideTestModel(t, 200)
+	m.pane = paneIDE
+	if m.ideFocus != ideFocusTree {
+		t.Fatal("want the tree focused to start")
+	}
+	// with nothing open there is no file to search: the pane says so
+	m = keyIDE(t, m, ctrlKey(tea.KeyCtrlF))
+	if m.ideInputKind != ideInputNone {
+		t.Errorf("ctrl+f with no file open opened kind %d", m.ideInputKind)
+	}
+	if m.err == nil {
+		t.Error("ctrl+f with no file open should explain itself")
+	}
+
+	// open a file, return to the tree, and ctrl+f should still reach the find
+	m.ideSel = indexOfIDERel(t, m, "main.go")
+	mm, _ := m.keyIDE(tea.KeyMsg{Type: tea.KeyEnter})
+	m = mm.(Model)
+	m.ideFocus = ideFocusTree
+	m.err = nil
+
+	m = keyIDE(t, m, ctrlKey(tea.KeyCtrlF))
+	if m.ideInputKind != ideInputFind {
+		t.Fatalf("ctrl+f from the tree opened kind %d, want the find", m.ideInputKind)
+	}
+	if m.ideFocus != ideFocusFile {
+		t.Error("the find should hand the file half the focus")
+	}
+}
+
+// TestIDECtrlFWhileEditing: ctrl+f is caught ahead of the buffer, dropping out
+// of the editor rather than being typed into it.
+func TestIDECtrlFWhileEditing(t *testing.T) {
+	m := ideTestModel(t, 200)
+	m.pane = paneIDE
+	m.ideSel = indexOfIDERel(t, m, "main.go")
+	mm, _ := m.keyIDE(tea.KeyMsg{Type: tea.KeyEnter})
+	m = mm.(Model)
+	m = keyIDE(t, m, runes("e"))
+	if !m.ideEditing {
+		t.Fatal("e should start editing")
+	}
+	before := m.ideBuf().val
+
+	m = keyIDE(t, m, ctrlKey(tea.KeyCtrlF))
+	if m.ideEditing {
+		t.Error("ctrl+f should leave the editor — two widgets cannot share the keys")
+	}
+	if m.ideInputKind != ideInputFind {
+		t.Errorf("ctrl+f mid-edit opened kind %d, want the find", m.ideInputKind)
+	}
+	if got := m.ideBuf().val; got != before {
+		t.Errorf("ctrl+f changed the buffer: %q -> %q", before, got)
+	}
+}
+
+// TestIDECtrlGSearchesTheWorktree: ctrl+g opens the worktree search, enter
+// runs it, and the results group by file under a header apiece.
+func TestIDECtrlGSearchesTheWorktree(t *testing.T) {
+	m := ideTestModel(t, 200)
+	m.pane = paneIDE
+
+	m = keyIDE(t, m, ctrlKey(tea.KeyCtrlG))
+	if m.ideInputKind != ideInputGrep {
+		t.Fatalf("ctrl+g opened kind %d, want the worktree search", m.ideInputKind)
+	}
+	m = typeIDE(t, m, "package")
+	m, cmd := keyIDECmd(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("enter should launch the search off the update loop")
+	}
+	if m.ideGrepQ != "package" {
+		t.Errorf("query = %q", m.ideGrepQ)
+	}
+	if !m.ideGrepping {
+		t.Error("the pane should show the search as in flight")
+	}
+
+	m = grepResult(m,
+		gitx.GrepFile{Path: "main.go", Matches: []gitx.GrepMatch{{Line: 1, Text: "package main"}}},
+		gitx.GrepFile{Path: "sub/util.go", Matches: []gitx.GrepMatch{
+			{Line: 1, Text: "package sub"}, {Line: 4, Text: "// package again"}}},
+	)
+	if m.ideGrepping {
+		t.Error("the result should clear the in-flight flag")
+	}
+	// 2 headers + 3 matches
+	if len(m.ideGrepRows) != 5 {
+		t.Fatalf("results list has %d rows, want 5: %+v", len(m.ideGrepRows), m.ideGrepRows)
+	}
+	if !m.ideGrepRows[0].hdr || m.ideGrepRows[0].rel != "main.go" {
+		t.Errorf("row 0 should head main.go, got %+v", m.ideGrepRows[0])
+	}
+	if m.ideGrepRows[1].hdr || m.ideGrepRows[1].line != 1 {
+		t.Errorf("row 1 should be main.go's match, got %+v", m.ideGrepRows[1])
+	}
+	if !m.ideGrepRows[2].hdr || m.ideGrepRows[2].rel != "sub/util.go" {
+		t.Errorf("row 2 should head sub/util.go, got %+v", m.ideGrepRows[2])
+	}
+}
+
+// TestIDEGrepFoldAndOpen: a header folds its file away, and enter on a match
+// opens that file with the cursor on the matching line — and seeds the in-file
+// find, so the hits are marked in the view the result jumped into.
+func TestIDEGrepFoldAndOpen(t *testing.T) {
+	m := ideTestModel(t, 200)
+	m.pane = paneIDE
+	m.ideGrepQ = "func"
+	m = grepResult(m,
+		gitx.GrepFile{Path: "main.go", Matches: []gitx.GrepMatch{{Line: 3, Text: "func main() {}"}}},
+		gitx.GrepFile{Path: "sub/util.go", Matches: []gitx.GrepMatch{{Line: 1, Text: "package sub"}}},
+	)
+	if len(m.ideGrepRows) != 4 {
+		t.Fatalf("want 4 rows, got %d", len(m.ideGrepRows))
+	}
+
+	// fold main.go from its header
+	m.ideGrepSel = 0
+	m, _ = keyIDECmd(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if len(m.ideGrepRows) != 3 {
+		t.Errorf("folding main.go should hide its match, got %d rows", len(m.ideGrepRows))
+	}
+	if !m.ideGrepFold["main.go"] {
+		t.Error("main.go should be folded")
+	}
+	// and unfold again
+	m, _ = keyIDECmd(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if len(m.ideGrepRows) != 4 {
+		t.Errorf("unfolding should bring the match back, got %d rows", len(m.ideGrepRows))
+	}
+
+	// enter on the match opens the file there
+	m.ideGrepSel = 1
+	m, _ = keyIDECmd(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	b := m.ideBuf()
+	if b == nil || b.rel != "main.go" {
+		t.Fatalf("enter on a match should open main.go, got %+v", b)
+	}
+	if b.cursor != 2 {
+		t.Errorf("cursor on line index %d, want 2 (line 3)", b.cursor)
+	}
+	if m.ideFindQ != "func" {
+		t.Errorf("the in-file find should inherit the query, got %q", m.ideFindQ)
+	}
+	if len(m.ideFindHits) == 0 {
+		t.Error("the inherited query should have marked hits in the file")
+	}
+}
+
+// TestIDEGrepEscRestoresTheTree: esc drops the results and the explorer comes
+// back, rather than leaving the pane on an empty list.
+func TestIDEGrepEscRestoresTheTree(t *testing.T) {
+	m := ideTestModel(t, 200)
+	m.pane = paneIDE
+	m.ideGrepQ = "package"
+	m = grepResult(m, gitx.GrepFile{Path: "main.go",
+		Matches: []gitx.GrepMatch{{Line: 1, Text: "package main"}}})
+	if !m.ideGrepActive() {
+		t.Fatal("the results should have taken over the tree half")
+	}
+
+	m = keyIDE(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.ideGrepActive() {
+		t.Error("esc should clear the results")
+	}
+	if len(m.ideTree) != 2 {
+		t.Errorf("the tree should be back with 2 rows, got %d", len(m.ideTree))
+	}
+}
+
+// TestIDEGrepScopeSwitchKeepsTyping: typed into the wrong scope, ctrl+g/ctrl+f
+// carries the query across instead of making you retype it.
+func TestIDEGrepScopeSwitchKeepsTyping(t *testing.T) {
+	m := ideTestModel(t, 200)
+	m.pane = paneIDE
+	m.ideSel = indexOfIDERel(t, m, "main.go")
+	mm, _ := m.keyIDE(tea.KeyMsg{Type: tea.KeyEnter})
+	m = mm.(Model)
+
+	m = keyIDE(t, m, ctrlKey(tea.KeyCtrlF))
+	m = typeIDE(t, m, "main")
+	m = keyIDE(t, m, ctrlKey(tea.KeyCtrlG))
+	if m.ideInputKind != ideInputGrep {
+		t.Fatalf("ctrl+g should switch scope, kind = %d", m.ideInputKind)
+	}
+	if got := m.ideInput.Value(); got != "main" {
+		t.Errorf("the query should carry over, got %q", got)
+	}
+}
+
+// TestIDEGrepRendersWithoutBleedingANSI: the results list draws inside its
+// column — the styled match must not push rows past the tree's width.
+func TestIDEGrepRendersWithoutBleedingANSI(t *testing.T) {
+	m := ideTestModel(t, 200)
+	m.pane = paneIDE
+	m.ideGrepQ = "needle"
+	m = grepResult(m, gitx.GrepFile{Path: "main.go", Matches: []gitx.GrepMatch{
+		{Line: 7, Text: strings.Repeat("x", 40) + "needle" + strings.Repeat("y", 40)},
+	}})
+	w, h := m.idePaneSize()
+	treeW := m.ideTreeWidth(w)
+	for i, row := range m.ideGrepRowsView(treeW, h) {
+		if got := lipgloss.Width(ansi.Strip(row)); got > treeW {
+			t.Errorf("row %d is %d cells wide, over the %d column: %q",
+				i, got, treeW, ansi.Strip(row))
+		}
+		if strings.Contains(ansi.Strip(row), "\x1b") {
+			t.Errorf("row %d has a sheared escape in it: %q", i, row)
+		}
+	}
+}
+
+// indexOfIDERel finds a tree row by its relative path.
+func indexOfIDERel(t *testing.T, m Model, rel string) int {
+	t.Helper()
+	for i, e := range m.ideTree {
+		if e.rel == rel {
+			return i
+		}
+	}
+	t.Fatalf("no tree row for %q: %+v", rel, m.ideTree)
+	return 0
+}
+
+// TestIDESearchKeysLeaveThePathPromptsAlone: ctrl+f must not hijack a
+// half-typed filename — the new-file and rename prompts keep their keys.
+func TestIDESearchKeysLeaveThePathPromptsAlone(t *testing.T) {
+	m := ideTestModel(t, 200)
+	m.pane = paneIDE
+	m = keyIDE(t, m, runes("a")) // the new-file prompt
+	if m.ideInputKind != ideInputNew {
+		t.Fatalf("a should open the new-file prompt, got kind %d", m.ideInputKind)
+	}
+	m = typeIDE(t, m, "notes")
+
+	m = keyIDE(t, m, ctrlKey(tea.KeyCtrlF))
+	if m.ideInputKind != ideInputNew {
+		t.Errorf("ctrl+f hijacked the new-file prompt, kind = %d", m.ideInputKind)
+	}
+	m = keyIDE(t, m, ctrlKey(tea.KeyCtrlG))
+	if m.ideInputKind != ideInputNew {
+		t.Errorf("ctrl+g hijacked the new-file prompt, kind = %d", m.ideInputKind)
+	}
+	if got := m.ideInput.Value(); !strings.Contains(got, "notes") {
+		t.Errorf("the typed path should have survived, got %q", got)
+	}
+}
+
+// TestIDERulerTracksTheWindow: the thumb covers the whole track when the file
+// fits, and follows the window down a file that does not.
+func TestIDERulerTracksTheWindow(t *testing.T) {
+	b := &ideBuf{hl: make([]string, 8)}
+	for _, c := range ideRulerCells(b, 10) {
+		if !c.thumb {
+			t.Fatalf("a file shorter than the window should band the whole track: %+v", c)
+		}
+	}
+
+	b = &ideBuf{hl: make([]string, 100)}
+	top := ideRulerCells(b, 10)
+	if !top[0].thumb {
+		t.Error("unscrolled, the thumb should start at the top")
+	}
+	if top[9].thumb {
+		t.Error("unscrolled, the thumb should not reach the bottom of a 100-line file")
+	}
+
+	b.scrollY = 90 // the last window of the file
+	bottom := ideRulerCells(b, 10)
+	if bottom[0].thumb {
+		t.Error("scrolled to the end, the thumb should have left the top")
+	}
+	if !bottom[9].thumb {
+		t.Error("scrolled to the end, the thumb should reach the bottom")
+	}
+
+	// the thumb is never empty, however long the file
+	long := &ideBuf{hl: make([]string, 100000)}
+	n := 0
+	for _, c := range ideRulerCells(long, 10) {
+		if c.thumb {
+			n++
+		}
+	}
+	if n == 0 {
+		t.Error("a very long file should still show a thumb somewhere")
+	}
+}
+
+// TestIDERulerCarriesTheDiff: the ruler picks up the gutter's marks, so a
+// change outside the window is still visible on the track.
+func TestIDERulerCarriesTheDiff(t *testing.T) {
+	b := &ideBuf{
+		hl:     make([]string, 100),
+		gutter: map[int]rune{5: '+', 95: '~'},
+	}
+	cells := ideRulerCells(b, 10)
+	if !cells[0].added {
+		t.Errorf("line 5 should mark the first cell as added: %+v", cells[0])
+	}
+	if !cells[9].changed {
+		t.Errorf("line 95 should mark the last cell as changed: %+v", cells[9])
+	}
+	// line 95 is far below the window, and the ruler still reports it
+	if cells[9].thumb {
+		t.Error("the changed line is off screen, so its cell is outside the thumb")
+	}
+	for i, c := range cells {
+		if i != 0 && i != 9 && (c.added || c.changed) {
+			t.Errorf("cell %d marked a diff it has no line for: %+v", i, c)
+		}
+	}
+
+	// a cell standing for both kinds reports both
+	both := &ideBuf{hl: make([]string, 100), gutter: map[int]rune{1: '+', 2: '~'}}
+	if c := ideRulerCells(both, 10)[0]; !c.added || !c.changed {
+		t.Errorf("a cell covering an add and a change should carry both: %+v", c)
+	}
+}
+
+// TestIDEEditorRowsAlignTheRuler: every row is exactly the view's width, so
+// the ruler stands in one column, and the track runs the full height even
+// past the end of a short file.
+func TestIDEEditorRowsAlignTheRuler(t *testing.T) {
+	m := ideTestModel(t, 200)
+	m.openIDEFile("main.go") // 3 lines, well short of the height below
+	const w, h = 60, 12
+
+	rows := m.ideEditorRows(w, h)
+	if len(rows) != h {
+		t.Fatalf("got %d rows, want the full height %d so the track reaches the bottom",
+			len(rows), h)
+	}
+	for i, row := range rows {
+		if got := lipgloss.Width(row); got != w {
+			t.Errorf("row %d is %d cells, want %d: %q", i, got, w, ansi.Strip(row))
+		}
+	}
+	// the rows past the end of the file are blank but for the track
+	last := ansi.Strip(rows[h-1])
+	if strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(last), "│")) != "" {
+		t.Errorf("the row past EOF should hold only the track, got %q", last)
+	}
+}
+
+// TestIDERulerYieldsOnANarrowPane: too narrow to spare a column, the ruler
+// steps aside rather than squeezing the code out.
+func TestIDERulerYieldsOnANarrowPane(t *testing.T) {
+	m := ideTestModel(t, 200)
+	m.openIDEFile("main.go")
+	rows := m.ideEditorRows(7, 4)
+	for i, row := range rows {
+		if strings.Contains(ansi.Strip(row), "│") {
+			t.Errorf("row %d kept the ruler on a 7-cell pane: %q", i, ansi.Strip(row))
+		}
+	}
+}
+
+// TestIDEFileIcons: the explorer marks a file's type by name first, then
+// extension, folders follow their fold, and the whole thing switches off.
+func TestIDEFileIcons(t *testing.T) {
+	m := ideTestModel(t, 200)
+
+	if got := m.ideFileIcon("main.go", false, false); got != iconGo {
+		t.Errorf("main.go icon = %q, want the go glyph", got)
+	}
+	if got := m.ideFileIcon("app/models/user.rb", false, false); got != iconRuby {
+		t.Errorf("user.rb icon = %q, want the ruby glyph", got)
+	}
+	// a known name beats the extension: go.mod is go, not a bare .mod
+	if got := m.ideFileIcon("go.mod", false, false); got != iconGo {
+		t.Errorf("go.mod icon = %q, want the go glyph", got)
+	}
+	if got := m.ideFileIcon("Dockerfile", false, false); got != iconDocker {
+		t.Errorf("Dockerfile icon = %q, want the docker glyph", got)
+	}
+	if got := m.ideFileIcon("DOCKERFILE", false, false); got != iconDocker {
+		t.Error("the name match should be case-insensitive")
+	}
+	if got := m.ideFileIcon("notes.wat", false, false); got != iconFile {
+		t.Errorf("an unknown extension = %q, want the plain file glyph", got)
+	}
+	if got := m.ideFileIcon("sub", true, false); got != iconFolder {
+		t.Errorf("a folded directory = %q", got)
+	}
+	if got := m.ideFileIcon("sub", true, true); got != iconFolderOpen {
+		t.Errorf("an unfolded directory = %q", got)
+	}
+
+	// the icons show up in the tree, and the config switches them off
+	w, _ := m.idePaneSize()
+	if rows := m.ideTreeRows(m.ideTreeWidth(w), 10); !strings.Contains(
+		ansi.Strip(strings.Join(rows, "\n")), iconGo) {
+		t.Error("the tree drew no go icon for main.go")
+	}
+	off := false
+	m.cfg.FileIcons = &off
+	if got := m.ideFileIcon("main.go", false, false); got != "" {
+		t.Errorf("icons off should give nothing, got %q", got)
+	}
+	if got := m.ideIconCell("main.go", false, false); got != "" {
+		t.Errorf("icons off should leave no gap, got %q", got)
+	}
+	rows := m.ideTreeRows(m.ideTreeWidth(w), 10)
+	if strings.Contains(ansi.Strip(strings.Join(rows, "\n")), iconGo) {
+		t.Error("the tree still drew icons with them switched off")
+	}
+}
+
+// TestIDESelectionBandFillsTheColumn: the selected row's background runs the
+// width of the explorer. The icons and fold markers are multi-byte, so a
+// byte-counting pad would leave the band short.
+func TestIDESelectionBandFillsTheColumn(t *testing.T) {
+	m := ideTestModel(t, 200)
+	m.pane = paneIDE
+	m.ideFocus = ideFocusTree
+	m.ideSel = indexOfIDERel(t, m, "main.go")
+	w, _ := m.idePaneSize()
+	treeW := m.ideTreeWidth(w)
+
+	rows := m.ideTreeRows(treeW, 10)
+	if len(rows) <= m.ideSel {
+		t.Fatalf("only %d rows drawn", len(rows))
+	}
+	if got := lipgloss.Width(ansi.Strip(rows[m.ideSel])); got != treeW-1 {
+		t.Errorf("the selected row spans %d cells, want the %d column",
+			got, treeW-1)
+	}
+}

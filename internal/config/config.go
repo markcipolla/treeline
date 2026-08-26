@@ -23,6 +23,11 @@ type Config struct {
 	// killing them and the next launch picks them back up. Unset means on
 	// wherever tmux is installed; set it to false to opt out.
 	PersistSessions *bool `json:"persist_sessions,omitempty"`
+	// FileIcons draws file-type icons in the ide pane's explorer, tabs and
+	// search results. The glyphs come from the Nerd Font private use area, so
+	// a terminal without one shows boxes: unset means on, set it to false to
+	// get the plain tree back.
+	FileIcons *bool `json:"file_icons,omitempty"`
 	// Repos remembers primary checkouts by name (e.g. "labmaster"), so
 	// treeline can be launched anywhere, list every repo's worktrees, and
 	// offer a repo picker when creating one.
@@ -32,6 +37,11 @@ type Config struct {
 // Persist reports whether embedded sessions should be tmux-backed.
 func (c *Config) Persist() bool {
 	return c.PersistSessions == nil || *c.PersistSessions
+}
+
+// Icons reports whether the ide pane draws file-type icons.
+func (c *Config) Icons() bool {
+	return c.FileIcons == nil || *c.FileIcons
 }
 
 // RepoConfig is a registered repository: its primary checkout plus optional
