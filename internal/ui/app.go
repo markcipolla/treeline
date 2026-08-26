@@ -1108,12 +1108,12 @@ func (m *Model) setTableLayout(w, h int) {
 		{Title: "TITLE", Width: titleW},
 		{Title: "PRIORITY", Width: priW},
 		{Title: "ASSIGNEE", Width: asgW},
+		{Title: "WORKTREE", Width: wtW},
 	}
 	if m.multiRepo() {
 		columns = append(columns, table.Column{Title: "REPO", Width: repoW})
 	}
 	columns = append(columns,
-		table.Column{Title: "WORKTREE", Width: wtW},
 		table.Column{Title: "GIT", Width: gitW},
 		table.Column{Title: "CI", Width: ciW},
 	)
@@ -1237,11 +1237,11 @@ func (m *Model) refreshRows() {
 	// row assembles cells in column order, dropping REPO when the column is
 	// not in the set — renderRow indexes the columns per cell
 	row := func(key, title, pri, asg, repo, wt, git, ci string) table.Row {
-		r := table.Row{key, title, pri, asg}
+		r := table.Row{key, title, pri, asg, wt}
 		if m.multiRepo() {
 			r = append(r, repo)
 		}
-		return append(r, wt, git, ci)
+		return append(r, git, ci)
 	}
 	header := func(title string) {
 		// plain text: styled cells break the table's width-based truncation
