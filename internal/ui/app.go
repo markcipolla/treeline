@@ -138,8 +138,13 @@ type Model struct {
 
 	// panel main screen (wide terminals): 0 issues, 1 claude, 2 ide, 3 git,
 	// 4 shell
-	pane  int
-	terms map[string]*claudeSession // interactive claude per directory
+	pane int
+	// dragged pane seams: per layout mode, per boundary, cells moved right
+	// (bandCols applies them); dragSeam is the boundary a press is holding
+	seamDrag  map[int][]int
+	dragSeam  int
+	dragLastX int
+	terms     map[string]*claudeSession // interactive claude per directory
 	// the shell pane is tabbed: the shell itself, the repo's setup script
 	// when it runs there, and any extra shells opened with ctrl+t
 	termTabs    map[string][]*termTab // tabs per directory
@@ -324,6 +329,8 @@ func New(cfg *config.Config, root string) Model {
 		ideEditor:     ideEditor,
 		ideInput:      newInput(""),
 		ideExpanded:   map[string]bool{},
+		seamDrag:      map[int][]int{},
+		dragSeam:      -1,
 		terms:         map[string]*claudeSession{},
 		termTabs:      map[string][]*termTab{},
 		termSel:       map[string]int{},
@@ -2637,6 +2644,30 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.MouseButtonLeft, tea.MouseButtonNone:
+		// a press on the seam between two panes grabs it: dragging trades
+		// width between them, per layout, until the button lets go
+		if m.screen == scrMain && m.threePane() {
+			switch msg.Action {
+			case tea.MouseActionPress:
+				if msg.Button == tea.MouseButtonLeft {
+					if s, ok := m.seamAt(msg); ok {
+						m.dragSeam = s
+						m.dragLastX = msg.X
+						return m, nil
+					}
+				}
+			case tea.MouseActionMotion:
+				if m.dragSeam >= 0 {
+					m.dragSeamTo(msg.X)
+					return m, nil
+				}
+			case tea.MouseActionRelease:
+				if m.dragSeam >= 0 {
+					m.dragSeam = -1
+					return m, nil
+				}
+			}
+		}
 		// drag selection, like a normal terminal: press anchors, drag
 		// extends, release copies to the clipboard. The git pane selects over
 		// its rendered text; the claude and shell panes over terminal cells.
@@ -2689,6 +2720,77 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		return m.handleClick(msg)
 	}
 	return m, nil
+}
+
+// ---- seam dragging ----
+
+// seamPairs are the current layout's vertical seams as the zones either side
+// of each; a seam's index is the boundary it moves in bandCols' columns.
+func (m Model) seamPairs() [][2]string {
+	switch m.layoutMode() {
+	case layFour:
+		return [][2]string{
+			{"pane:issues", "pane:claude"},
+			{"pane:claude", "pane:ide"},
+			{"pane:ide", "pane:diff"},
+			{"pane:diff", "pane:term"},
+		}
+	case layCols:
+		return [][2]string{
+			{"pane:issues", "pane:claude"},
+			{"pane:claude", "pane:ide"},
+			{"pane:ide", "pane:diff"},
+		}
+	case layStack:
+		// the issues strip sits above the band; only the work panes share
+		// vertical seams
+		return [][2]string{
+			{"pane:claude", "pane:ide"},
+			{"pane:ide", "pane:diff"},
+		}
+	}
+	return nil
+}
+
+// seamAt reports which seam the pointer is on: the border columns between
+// two neighbouring panes, over the left pane's rows.
+func (m Model) seamAt(msg tea.MouseMsg) (int, bool) {
+	for i, p := range m.seamPairs() {
+		za, zb := m.zones.Get(p[0]), m.zones.Get(p[1])
+		if za == nil || zb == nil || za.IsZero() || zb.IsZero() {
+			continue
+		}
+		if msg.X > za.EndX && msg.X < zb.StartX &&
+			msg.Y >= za.StartY && msg.Y <= za.EndY {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+// dragSeamTo moves the held seam to the pointer's column. The offset is kept
+// per layout mode — each arrangement holds its own shape — and clamped to
+// what the two columns can trade, so dragging back after hitting the floor
+// answers immediately instead of unwinding a phantom debt.
+func (m *Model) dragSeamTo(x int) {
+	dx := x - m.dragLastX
+	if dx == 0 {
+		return
+	}
+	m.dragLastX = x
+	mode := m.layoutMode()
+	deltas := m.seamDrag[mode]
+	for len(deltas) <= m.dragSeam {
+		deltas = append(deltas, 0)
+	}
+	m.seamDrag[mode] = deltas
+	want := deltas[m.dragSeam] + dx
+	deltas[m.dragSeam] = 0 // measure the columns as the other seams leave them
+	cols := m.bandCols(m.bandWidth())
+	if m.dragSeam < len(cols)-1 {
+		deltas[m.dragSeam] = clampSeam(want, cols[m.dragSeam], cols[m.dragSeam+1])
+	}
+	m.resize()
 }
 
 // overGitPane reports whether a mouse event lands in the git pane. Scrolling

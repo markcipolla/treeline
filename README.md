@@ -122,6 +122,10 @@ How the panes are arranged follows the width of the terminal:
 | 180–279 | four columns: issues, claude, ide, git over the shell                  |
 | ≥ 280   | five columns: the shell gets one of its own                            |
 
+The seams between panes drag with the mouse: press on the border between
+two panes and pull to trade width between them. Each layout keeps its own
+shape, and no pane can be pressed into a sliver.
+
 In the stacked layout the issues strip collapses to a single line when
 another pane has focus and grows back to half the screen when you `ctrl+q`
 into it. As a column it stays full height, so the cards are always in view,

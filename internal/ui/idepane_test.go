@@ -564,3 +564,66 @@ func TestIDEDividerRunsFullHeight(t *testing.T) {
 		t.Error("the divider never reaches the bottom border's ┴")
 	}
 }
+
+// TestSeamDragResizesPanes: pressing on the border between two panes grabs
+// the seam; dragging trades width between them, floored so neither pane
+// collapses, and the shape holds after release.
+func TestSeamDragResizesPanes(t *testing.T) {
+	m := newTestModel(t, 220)
+	za := awaitZone(t, m, "pane:claude")
+	before := m.layout()
+
+	seamX, y := za.EndX+1, za.StartY+2
+	mm, _ := m.Update(tea.MouseMsg{X: seamX, Y: y, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	m = mm.(Model)
+	if m.dragSeam < 0 {
+		t.Fatal("press on the seam did not grab it")
+	}
+	mm, _ = m.Update(tea.MouseMsg{X: seamX + 8, Y: y, Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion})
+	m = mm.(Model)
+	mm, _ = m.Update(tea.MouseMsg{X: seamX + 8, Y: y, Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease})
+	m = mm.(Model)
+	if m.dragSeam >= 0 {
+		t.Error("release should let the seam go")
+	}
+
+	after := m.layout()
+	if after.claude.w != before.claude.w+8 || after.ide.w != before.ide.w-8 {
+		t.Errorf("dragged +8: claude %d→%d, ide %d→%d",
+			before.claude.w, after.claude.w, before.ide.w, after.ide.w)
+	}
+	if got, want := after.issues.w+after.claude.w+after.ide.w+after.git.w,
+		before.issues.w+before.claude.w+before.ide.w+before.git.w; got != want {
+		t.Errorf("band total drifted: %d, want %d", got, want)
+	}
+
+	// the app renders between updates, refreshing the zones; the test has to
+	// do the same before grabbing the moved seam again
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		m.View()
+		if z := m.zones.Get("pane:claude"); z != nil && z.EndX == za.EndX+8 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("claude zone never caught up with the drag")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	seamX += 8
+
+	// hauling the seam far past the floor pins the pane at minDragCol
+	mm, _ = m.Update(tea.MouseMsg{X: seamX, Y: y, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	m = mm.(Model)
+	mm, _ = m.Update(tea.MouseMsg{X: 0, Y: y, Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion})
+	m = mm.(Model)
+	if got := m.layout().claude.w; got != minDragCol {
+		t.Errorf("claude pane dragged past the floor: %d, want %d", got, minDragCol)
+	}
+	// ...and dragging straight back answers without unwinding a phantom debt
+	mm, _ = m.Update(tea.MouseMsg{X: 6, Y: y, Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion})
+	m = mm.(Model)
+	if got := m.layout().claude.w; got != minDragCol+6 {
+		t.Errorf("claude pane should follow the pointer back: %d, want %d", got, minDragCol+6)
+	}
+}
