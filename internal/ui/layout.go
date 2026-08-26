@@ -104,37 +104,29 @@ func (m Model) layout() layout {
 	case layStack:
 		topH, bottomH := stackHeights(avail, m.pane == paneIssues)
 		gitH, termH := splitRight(bottomH)
-		lw := w * 36 / 100
-		ew := w * 32 / 100
+		cols := m.bandCols(w)
 		l.issues = box{w, topH}
-		l.claude = box{lw, bottomH}
-		l.ide = box{ew, bottomH}
-		l.git = box{w - lw - ew, gitH}
-		l.term = box{w - lw - ew, termH}
+		l.claude = box{cols[0], bottomH}
+		l.ide = box{cols[1], bottomH}
+		l.git = box{cols[2], gitH}
+		l.term = box{cols[2], termH}
 
 	case layCols:
-		iw := m.issuesColWidth(clampW(w*32/100, 50, 72), w)
-		rest := w - iw
-		cw := rest * 38 / 100
-		ew := rest * 30 / 100
 		gitH, termH := splitRight(avail)
-		l.issues = box{iw, avail}
-		l.claude = box{cw, avail}
-		l.ide = box{ew, avail}
-		l.git = box{rest - cw - ew, gitH}
-		l.term = box{rest - cw - ew, termH}
+		cols := m.bandCols(w)
+		l.issues = box{cols[0], avail}
+		l.claude = box{cols[1], avail}
+		l.ide = box{cols[2], avail}
+		l.git = box{cols[3], gitH}
+		l.term = box{cols[3], termH}
 
 	case layFour:
-		iw := m.issuesColWidth(clampW(w*26/100, 50, 64), w)
-		rest := w - iw
-		cw := rest * 28 / 100
-		ew := rest * 26 / 100
-		gw := rest * 24 / 100
-		l.issues = box{iw, avail}
-		l.claude = box{cw, avail}
-		l.ide = box{ew, avail}
-		l.git = box{gw, avail}
-		l.term = box{rest - cw - ew - gw, avail}
+		cols := m.bandCols(w)
+		l.issues = box{cols[0], avail}
+		l.claude = box{cols[1], avail}
+		l.ide = box{cols[2], avail}
+		l.git = box{cols[3], avail}
+		l.term = box{cols[4], avail}
 
 	default:
 		h := m.height - docStyle.GetVerticalFrameSize() - 4
@@ -144,6 +136,69 @@ func (m Model) layout() layout {
 		l.issues = box{w, h}
 	}
 	return l
+}
+
+// bandCols is the main band's column widths for the current mode: the
+// percentage split, then whatever seams the user has dragged applied on top
+// (dragSeamTo), no column pressed under minDragCol. In the stacked layout
+// the band is the work panes under the issues strip; in the column layouts
+// the issues list is its first column.
+func (m Model) bandCols(w int) []int {
+	var cols []int
+	switch m.layoutMode() {
+	case layStack:
+		lw, ew := w*36/100, w*32/100
+		cols = []int{lw, ew, w - lw - ew}
+	case layCols:
+		iw := m.issuesColWidth(clampW(w*32/100, 50, 72), w)
+		rest := w - iw
+		cw, ew := rest*38/100, rest*30/100
+		cols = []int{iw, cw, ew, rest - cw - ew}
+	case layFour:
+		iw := m.issuesColWidth(clampW(w*26/100, 50, 64), w)
+		rest := w - iw
+		cw, ew, gw := rest*28/100, rest*26/100, rest*24/100
+		cols = []int{iw, cw, ew, gw, rest - cw - ew - gw}
+	default:
+		return nil
+	}
+	for b, d := range m.seamDrag[m.layoutMode()] {
+		if b >= len(cols)-1 {
+			break
+		}
+		d = clampSeam(d, cols[b], cols[b+1])
+		cols[b] += d
+		cols[b+1] -= d
+	}
+	return cols
+}
+
+// bandWidth is the width bandCols divides up — the terminal less the doc
+// frame, floored the way layout() floors it.
+func (m Model) bandWidth() int {
+	w := m.width - docStyle.GetHorizontalFrameSize()
+	if w < 40 {
+		w = 40
+	}
+	return w
+}
+
+// minDragCol is as narrow as a dragged seam may press a column: past this a
+// pane is a sliver of border with nothing readable inside.
+const minDragCol = 24
+
+// clampSeam holds a seam's offset to what its two columns can trade.
+func clampSeam(d, left, right int) int {
+	if left+right < 2*minDragCol {
+		return 0 // nothing to trade at this width
+	}
+	if d > right-minDragCol {
+		d = right - minDragCol
+	}
+	if d < minDragCol-left {
+		d = minDragCol - left
+	}
+	return d
 }
 
 // stackHeights splits the vertical space in the stacked layout: the issues
