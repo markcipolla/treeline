@@ -730,12 +730,12 @@ func (m Model) ideTreeWidth(w int) int {
 	return clampW(w*30/100, 12, 26)
 }
 
-// ideContentH is the pane rows left for the halves once the input line (when
-// open) is taken off the top.
+// ideContentH is the pane rows left for the halves once the input bar (when
+// open) is taken off the top — three rows, the border included.
 func (m Model) ideContentH() int {
 	_, h := m.idePaneSize()
 	if m.ideInputKind != ideInputNone {
-		h--
+		h -= 3
 	}
 	if h < 1 {
 		h = 1
@@ -786,7 +786,13 @@ func (m Model) idePaneContent(w, h int) (string, string) {
 
 	var rows []string
 	if m.ideInputKind != ideInputNone {
-		rows = append(rows, maxWidthStyle(w).Render(m.ideInput.View()))
+		bar := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(accent).
+			Padding(0, 1).
+			Width(w - 2).
+			Render(m.ideInput.View())
+		rows = append(rows, strings.Split(maxWidthStyle(w).Render(bar), "\n")...)
 	}
 	ch := m.ideContentH()
 	treeW := m.ideTreeWidth(w)
@@ -1064,7 +1070,7 @@ func (m Model) keyIDEFile(k tea.KeyMsg, confirm string) (tea.Model, tea.Cmd) {
 		m.switchIDEBuf(1)
 		return m, nil
 	case "/", "ctrl+f":
-		return m.openIDEInput(ideInputFind, "⌕ ", m.ideFindQ)
+		return m.openIDEInput(ideInputFind, "⌕ ", "find in this file…", m.ideFindQ)
 	case "n":
 		m.jumpIDEFind(1)
 	case "N":
@@ -1098,7 +1104,7 @@ func (m Model) keyIDETree(k tea.KeyMsg, confirm string) (tea.Model, tea.Cmd) {
 	case "h", "left":
 		m.collapseIDESel()
 	case "/":
-		return m.openIDEInput(ideInputFilter, "/ ", m.ideFilter)
+		return m.openIDEInput(ideInputFilter, "/ ", "type to filter files…", m.ideFilter)
 	case "a":
 		seed := ""
 		if e, ok := m.ideSelEntry(); ok {
@@ -1108,10 +1114,10 @@ func (m Model) keyIDETree(k tea.KeyMsg, confirm string) (tea.Model, tea.Cmd) {
 				seed = d + string(filepath.Separator)
 			}
 		}
-		return m.openIDEInput(ideInputNew, "+ ", seed)
+		return m.openIDEInput(ideInputNew, "+ ", "path/for/the/new-file…", seed)
 	case "R":
 		if e, ok := m.ideSelEntry(); ok {
-			return m.openIDEInput(ideInputRename, "→ ", e.rel)
+			return m.openIDEInput(ideInputRename, "→ ", "new path…", e.rel)
 		}
 	case "d":
 		e, ok := m.ideSelEntry()
@@ -1150,9 +1156,10 @@ func (m Model) ideSelEntry() (ideEntry, bool) {
 
 // ---- the input line ----
 
-func (m Model) openIDEInput(kind int, prompt, seed string) (tea.Model, tea.Cmd) {
+func (m Model) openIDEInput(kind int, prompt, placeholder, seed string) (tea.Model, tea.Cmd) {
 	m.ideInputKind = kind
 	m.ideInput.Prompt = prompt
+	m.ideInput.Placeholder = placeholder
 	m.ideInput.SetValue(seed)
 	m.ideInput.CursorEnd()
 	return m, m.ideInput.Focus()
@@ -1468,7 +1475,7 @@ func (m Model) clickIDE(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if b := m.ideBuf(); b != nil && !m.ideEditing {
 		if x, y, ok := m.paneBodyPos(paneIDE, msg); ok {
 			if m.ideInputKind != ideInputNone {
-				y-- // the input line sits above both halves
+				y -= 3 // the bordered input bar sits above both halves
 			}
 			w, _ := m.idePaneSize()
 			if x >= m.ideTreeWidth(w) && y >= 1 { // y 0 is the tab bar
