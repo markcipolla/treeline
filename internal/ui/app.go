@@ -815,7 +815,7 @@ func (m Model) maybeLoadCI() tea.Cmd {
 
 func (m *Model) resize() {
 	w := m.width - docStyle.GetHorizontalFrameSize()
-	h := m.height - docStyle.GetVerticalFrameSize() - 6 // header, summary, filter, help
+	h := m.height - docStyle.GetVerticalFrameSize() - 4 // header, filter, help
 	if h < 3 {
 		h = 3
 	}
