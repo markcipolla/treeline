@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -465,4 +466,63 @@ func EnsureExcluded(root string) error {
 	defer f.Close()
 	_, err = f.WriteString(entry)
 	return err
+}
+
+// ChangedLines reports which lines of one file the working tree changed
+// against HEAD, keyed by 0-based line number: '+' for added lines, '~' for
+// lines a hunk rewrote. An untracked file is new throughout.
+func ChangedLines(dir, path string) (map[int]rune, error) {
+	if st, err := run(dir, "status", "--porcelain", "--", path); err == nil && strings.HasPrefix(st, "??") {
+		data, err := os.ReadFile(filepath.Join(dir, path))
+		if err != nil {
+			return nil, err
+		}
+		marks := map[int]rune{}
+		for i := range strings.Split(strings.TrimSuffix(string(data), "\n"), "\n") {
+			marks[i] = '+'
+		}
+		return marks, nil
+	}
+	out, err := run(dir, "diff", "-U0", "HEAD", "--", path)
+	if err != nil {
+		return nil, err // no HEAD yet, or not a repo: no gutter to show
+	}
+	return parseChangedLines(out), nil
+}
+
+// parseChangedLines pulls the new-side line ranges out of a -U0 diff's hunk
+// headers: @@ -a[,b] +c[,d] @@ marks d lines from c, added when b is 0.
+func parseChangedLines(diff string) map[int]rune {
+	marks := map[int]rune{}
+	for _, line := range strings.Split(diff, "\n") {
+		if !strings.HasPrefix(line, "@@") {
+			continue
+		}
+		fs := strings.Fields(line)
+		if len(fs) < 3 {
+			continue
+		}
+		_, oldN := hunkRange(fs[1])
+		start, newN := hunkRange(fs[2])
+		mark := '~'
+		if oldN == 0 {
+			mark = '+'
+		}
+		for i := 0; i < newN; i++ {
+			marks[start-1+i] = mark
+		}
+	}
+	return marks
+}
+
+func hunkRange(s string) (start, count int) {
+	s = strings.TrimLeft(s, "+-")
+	count = 1
+	if a, c, ok := strings.Cut(s, ","); ok {
+		start, _ = strconv.Atoi(a)
+		count, _ = strconv.Atoi(c)
+	} else {
+		start, _ = strconv.Atoi(s)
+	}
+	return start, count
 }

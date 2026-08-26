@@ -107,20 +107,24 @@ prompt.
 The mouse works too: click buttons and branch-type options; scroll the
 table and detail view with the wheel.
 
-`ctrl+q` cycles the panes: issues, claude, git, shell. The claude and shell
-panes run in the selected worktree and survive quitting — see
+`ctrl+q` cycles the panes: issues, claude, ide, git, shell. The claude and
+shell panes run in the selected worktree and survive quitting — see
 [Background sessions](#background-sessions).
 
 ### Layouts
 
 How the panes are arranged follows the width of the terminal:
 
-| Width   | Layout                                                            |
-| ------- | ----------------------------------------------------------------- |
-| < 110   | the issues table on its own                                       |
-| 110–179 | issues as a strip on top, claude beside the git pane over a shell |
-| 180–239 | three columns: issues, claude, git over the shell                 |
-| ≥ 240   | four columns: the shell gets one of its own                       |
+| Width   | Layout                                                                 |
+| ------- | ---------------------------------------------------------------------- |
+| < 110   | the issues table on its own                                            |
+| 110–179 | issues as a strip on top; claude, ide, and the git pane over a shell   |
+| 180–279 | four columns: issues, claude, ide, git over the shell                  |
+| ≥ 280   | five columns: the shell gets one of its own                            |
+
+The seams between panes drag with the mouse: press on the border between
+two panes and pull to trade width between them. Each layout keeps its own
+shape, and no pane can be pressed into a sliver.
 
 In the stacked layout the issues strip collapses to a single line when
 another pane has focus and grows back to half the screen when you `ctrl+q`
@@ -135,6 +139,37 @@ of them is two lines thick. Sharing one line reads tighter, but then a rule
 inside one panel — the issues grid's dividers — has to T-join the border of
 the panel beside it, and a focused panel's highlight runs into its
 neighbour's edge.
+
+### The ide pane
+
+A scaled-down port of [croft](https://github.com/vitali87/croft) sitting
+between claude and git: a file explorer over the selected worktree beside
+the open files, each in its own tab, syntax-highlighted, with a git gutter
+marking the lines the worktree changed. `enter` unfolds a directory or opens
+a file, `e` drops into an editable buffer, `ctrl+s` writes it back (and
+refreshes the git pane), and `esc` climbs back out — editor → file → tree.
+`o` in the git pane's file lists opens the selected file here. The wheel
+scrolls whichever half the pointer is over, and a click opens what it lands
+on.
+
+The pane keeps its footing while claude edits the same worktree: the tree
+re-reads, clean buffers follow the disk, and dirty ones are marked stale
+rather than losing either side. A save onto a file that changed underneath
+is refused — `r` reloads it, `R` overwrites — and unsaved edits pin the pane
+so moving through the issues list can't discard them. Saves keep the file's
+own tabs and line endings on every line the edit didn't touch.
+
+| Key | Action |
+| --- | --- |
+| `↑` `↓` | move through the tree / the open file |
+| `enter` | unfold a directory, open a file, edit the open file |
+| `/` | tree: filter by path · file: find (`n`/`N` walk the matches) |
+| `e` | edit the open file, starting at the line under the cursor |
+| `ctrl+s` | save (`R` saves over a disk change, `r` reloads instead) |
+| `[` `]` | previous / next tab |
+| `x` | close the tab (`x` again drops unsaved edits) |
+| `a` `R` `d` | tree: new file (`dir/` for a directory), rename, delete (`d` again) |
+| `esc` | stop editing → back to the file → back to the tree |
 
 ### The git pane
 

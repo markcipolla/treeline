@@ -224,6 +224,17 @@ func (m Model) viewMain() string {
 			bindings = []key.Binding{keyTermEsc}
 		case paneTerm:
 			bindings = []key.Binding{keyTermTabs, keyTermEsc}
+		case paneIDE:
+			switch {
+			case m.ideEditing:
+				bindings = []key.Binding{keyIDESave, keyIDEView, keyTermEsc}
+			case m.ideInputKind != ideInputNone:
+				bindings = []key.Binding{keyApply, keyCancel}
+			case m.ideFocus == ideFocusFile:
+				bindings = []key.Binding{keyIDEEdit, keyIDESave, keyIDEFind, keyIDETabs, keyIDEClose, keyIDETree}
+			default:
+				bindings = []key.Binding{keyIDEOpen, keyIDEFilter, keyIDENew, keyIDERename, keyIDEDel}
+			}
 		case paneDiff:
 			bindings = []key.Binding{keyChoose, keyStage, keyHunks, keyCommitC, keyLog, keyBranchD, keyBack}
 			if m.gitMode == gitModeCommit {
@@ -299,6 +310,14 @@ func (m Model) viewPanels() string {
 	claude := m.mark("pane:claude",
 		m.workPart(l.claude, m.pane == paneClaude, claudeTitle, claudeBody))
 
+	var ide panePart
+	if noWT && !m.ideAnyDirty() {
+		ide = m.workPart(l.ide, m.pane == paneIDE, "ide", dimStyle.Render(m.noWorktreeHint()))
+	} else {
+		ide = m.idePart(l.ide, m.pane == paneIDE)
+	}
+	ide = m.mark("pane:ide", ide)
+
 	gitTitle, gitBody := m.gitPaneContent(l.git.w-4, l.git.h-4)
 	if wt := m.selectedRef().wt; wt != nil && wt.Prunable {
 		gitTitle, gitBody = "git", warnStyle.Render("worktree directory is gone — press d to clean it up")
@@ -360,11 +379,30 @@ func (m Model) viewPanels() string {
 
 	switch l.mode {
 	case layFour:
-		return frame(band{{issues}, {claude}, {git}, {term}})
+		return frame(band{{issues}, {claude}, {ide}, {git}, {term}})
 	case layCols:
-		return frame(band{{issues}, {claude}, {git, term}})
+		return frame(band{{issues}, {claude}, {ide}, {git, term}})
 	}
-	return frame(band{{issues}}, band{{claude}, {git, term}})
+	return frame(band{{issues}}, band{{claude}, {ide}, {git, term}})
+}
+
+// idePart is the ide pane as a panePart: workPart's chrome with the
+// explorer/editor divider carried into it — ╤ where it meets the title rule
+// and ┴ into the bottom border — so the divider runs the pane's full height
+// instead of hanging between them.
+func (m Model) idePart(b box, focused bool) panePart {
+	title, body := m.idePaneContent(b.w-4, b.h-4)
+	p := m.workPart(b, focused, title, body)
+	dx := m.ideTreeWidth(b.w-4) + 2 // the │ in " │ ", past the body's pad column
+	if len(p.rows) > 1 && dx > 0 && dx < p.w-1 {
+		rs := metaStyle
+		if focused {
+			rs = okStyle
+		}
+		p.rows[1] = rs.Render(strings.Repeat("═", dx) + "╤" + strings.Repeat("═", p.w-dx-1))
+		p.botJoin = []int{dx}
+	}
+	return p
 }
 
 // workPart builds one of the work panes: its title, the ═ rule under it, and

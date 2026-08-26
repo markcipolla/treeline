@@ -136,14 +136,40 @@ type Model struct {
 	searchSeq     int    // bumped per keystroke; stale ticks/results are dropped
 	searchedFor   string // query the current results answer; "" = none yet
 
-	// panel main screen (wide terminals): 0 issues, 1 claude, 2 git, 3 shell
-	pane  int
-	terms map[string]*claudeSession // interactive claude per directory
+	// panel main screen (wide terminals): 0 issues, 1 claude, 2 ide, 3 git,
+	// 4 shell
+	pane int
+	// dragged pane seams: per layout mode, per boundary, cells moved right
+	// (bandCols applies them); dragSeam is the boundary a press is holding
+	seamDrag  map[int][]int
+	dragSeam  int
+	dragLastX int
+	terms     map[string]*claudeSession // interactive claude per directory
 	// the shell pane is tabbed: the shell itself, the repo's setup script
 	// when it runs there, and any extra shells opened with ctrl+t
 	termTabs    map[string][]*termTab // tabs per directory
 	termSel     map[string]int        // active tab per directory
 	termScanned map[string]bool       // dirs checked for persisted extra tabs
+
+	// ide pane: file explorer + editor tabs for the selected worktree
+	// (idepane.go)
+	ideFor       string          // worktree the pane shows
+	ideExpanded  map[string]bool // unfolded directories, by rel path
+	ideTree      []ideEntry      // visible rows, depth-first (or filter hits)
+	ideSel       int             // cursor in the tree
+	ideScroll    int             // tree window offset
+	ideFocus     int             // which half has the keys: tree or file
+	ideBufs      []*ideBuf       // open files, one tab each
+	ideCur       int             // the active tab
+	ideEditing   bool            // the textarea has the keys
+	ideEditor    textarea.Model
+	ideInput     textinput.Model // the pane's ask-line: filter, find, new, rename
+	ideInputKind int
+	ideFilter    string    // applied tree filter
+	ideFindQ     string    // in-file search query, kept for n/N
+	ideFindHits  []int     // lines of the active buffer matching it
+	ideConfirm   string    // pending destructive action awaiting a second press
+	ideSavedAt   time.Time // "saved ✓" flash
 
 	diffVP      viewport.Model
 	diffRaw     string
@@ -267,6 +293,17 @@ func New(cfg *config.Config, root string) Model {
 	commitBody.ShowLineNumbers = false
 	commitBody.CharLimit = 0
 
+	// the pane draws the editor itself, highlighted (see ideEditorRows); the
+	// textarea only keeps the buffer and cursor, and its width is set past
+	// any real line so it never soft-wraps
+	ideEditor := textarea.New()
+	ideEditor.ShowLineNumbers = false
+	ideEditor.CharLimit = 0
+	ideEditor.MaxHeight = 0
+	ideEditor.MaxWidth = 0
+	ideEditor.Prompt = ""
+	ideEditor.SetWidth(ideEditorWidth)
+
 	ghOwner, ghRepo, ghOK := github.RepoFromRemote(root)
 
 	repos := buildRepos(cfg, root)
@@ -289,6 +326,11 @@ func New(cfg *config.Config, root string) Model {
 		setInputs:     setInputs,
 		commitSubject: commitSubject,
 		commitBody:    commitBody,
+		ideEditor:     ideEditor,
+		ideInput:      newInput(""),
+		ideExpanded:   map[string]bool{},
+		seamDrag:      map[int][]int{},
+		dragSeam:      -1,
 		terms:         map[string]*claudeSession{},
 		termTabs:      map[string][]*termTab{},
 		termSel:       map[string]int{},
@@ -521,6 +563,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.searchInput.SetSuggestions(sugs)
 		return m, nil
 
+	case ideGutterMsg:
+		if msg.dir == m.ideFor {
+			for _, b := range m.ideBufs {
+				if b.rel == msg.rel {
+					b.gutter = msg.marks
+				}
+			}
+		}
+		return m, nil
+
 	case gitStatusMsg:
 		if msg.dir != m.gitFor {
 			return m, nil
@@ -632,6 +684,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if s.dir == m.gitFor && time.Since(m.gitFreshAt) > 3*time.Second {
 			m.gitFreshAt = time.Now()
 			cmds = append(cmds, m.reloadGit(), m.loadSelectedFileDiff(), m.loadWorktrees())
+			if s.dir == m.ideFor {
+				// the ide pane follows the same edits: the tree re-reads,
+				// clean buffers reload, dirty ones are marked stale
+				cmds = append(cmds, m.refreshIDEDisk()...)
+			}
 		}
 		return m, tea.Batch(cmds...)
 
@@ -844,6 +901,9 @@ func (m *Model) resize() {
 		}
 		m.diffVP.Width = l.git.w - 2
 		m.diffVP.Height = l.git.h - 4
+		// the ide editor is drawn by the pane itself and never resizes; only
+		// its ask-line follows the pane's width
+		m.ideInput.Width = l.ide.w - 8
 		m.commitSubject.Width = l.git.w - 10
 		m.commitBody.SetWidth(l.git.w - 6)
 		bh := l.git.h - 13
@@ -1747,11 +1807,18 @@ func (m Model) keyMain(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.pane == paneDiff && m.gitMode == gitModeCommit && k.String() != "ctrl+q" {
 			return m.keyGit(k) // the form owns tab/enter while typing
 		}
+		if m.pane == paneIDE && (m.ideEditing || m.ideInputKind != ideInputNone) &&
+			k.String() != "ctrl+q" {
+			return m.keyIDE(k) // the buffer or ask-line owns tab/enter
+		}
 		switch k.String() {
 		case "tab", "ctrl+q":
 			return m.focusPane(m.cyclePane(1))
 		case "shift+tab":
 			return m.focusPane(m.cyclePane(-1))
+		}
+		if m.pane == paneIDE {
+			return m.keyIDE(k)
 		}
 		if m.pane == paneDiff {
 			return m.keyGit(k)
@@ -1882,9 +1949,10 @@ func (m Model) keyMain(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 const (
 	paneIssues = 0
 	paneClaude = 1
-	paneDiff   = 2
-	paneTerm   = 3
-	paneCount  = 4
+	paneIDE    = 2
+	paneDiff   = 3
+	paneTerm   = 4
+	paneCount  = 5
 )
 
 // paneEnabled reports whether a pane can hold focus: claude, git and the shell
@@ -1924,6 +1992,16 @@ func (m Model) focusPane(p int) (tea.Model, tea.Cmd) {
 	if p == paneDiff {
 		m.gitFreshAt = time.Now()
 		return m, tea.Batch(m.reloadGit(), m.loadSelectedFileDiff())
+	}
+	if p == paneIDE {
+		if dir := m.claudeDir(); dir != m.ideFor {
+			m.resetIDE(dir)
+		} else if len(m.ideTree) == 0 && m.ideFilter == "" {
+			m.refreshIDETree()
+		}
+		if m.ideEditing || m.ideInputKind != ideInputNone {
+			return m, textarea.Blink
+		}
 	}
 	return m, nil
 }
@@ -2316,6 +2394,10 @@ func (m *Model) syncPanes() tea.Cmd {
 		}
 	}
 
+	if dir := m.claudeDir(); dir != m.ideFor {
+		m.resetIDE(dir) // keeps its place instead when edits are unsaved
+	}
+
 	if dir := m.claudeDir(); dir != m.gitFor {
 		m.gitFor = dir
 		m.gitMode = gitModeFiles
@@ -2530,6 +2612,10 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				}
 				// an empty pane has no scrollback: move the cards instead
 			}
+			if m.threePane() && over == paneIDE {
+				m.scrollIDERegion(msg, up)
+				return m, nil
+			}
 			if m.threePane() && over == paneDiff {
 				m.gitSel.clear()
 				switch m.gitMode {
@@ -2558,6 +2644,30 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.MouseButtonLeft, tea.MouseButtonNone:
+		// a press on the seam between two panes grabs it: dragging trades
+		// width between them, per layout, until the button lets go
+		if m.screen == scrMain && m.threePane() {
+			switch msg.Action {
+			case tea.MouseActionPress:
+				if msg.Button == tea.MouseButtonLeft {
+					if s, ok := m.seamAt(msg); ok {
+						m.dragSeam = s
+						m.dragLastX = msg.X
+						return m, nil
+					}
+				}
+			case tea.MouseActionMotion:
+				if m.dragSeam >= 0 {
+					m.dragSeamTo(msg.X)
+					return m, nil
+				}
+			case tea.MouseActionRelease:
+				if m.dragSeam >= 0 {
+					m.dragSeam = -1
+					return m, nil
+				}
+			}
+		}
 		// drag selection, like a normal terminal: press anchors, drag
 		// extends, release copies to the clipboard. The git pane selects over
 		// its rendered text; the claude and shell panes over terminal cells.
@@ -2612,6 +2722,77 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// ---- seam dragging ----
+
+// seamPairs are the current layout's vertical seams as the zones either side
+// of each; a seam's index is the boundary it moves in bandCols' columns.
+func (m Model) seamPairs() [][2]string {
+	switch m.layoutMode() {
+	case layFour:
+		return [][2]string{
+			{"pane:issues", "pane:claude"},
+			{"pane:claude", "pane:ide"},
+			{"pane:ide", "pane:diff"},
+			{"pane:diff", "pane:term"},
+		}
+	case layCols:
+		return [][2]string{
+			{"pane:issues", "pane:claude"},
+			{"pane:claude", "pane:ide"},
+			{"pane:ide", "pane:diff"},
+		}
+	case layStack:
+		// the issues strip sits above the band; only the work panes share
+		// vertical seams
+		return [][2]string{
+			{"pane:claude", "pane:ide"},
+			{"pane:ide", "pane:diff"},
+		}
+	}
+	return nil
+}
+
+// seamAt reports which seam the pointer is on: the border columns between
+// two neighbouring panes, over the left pane's rows.
+func (m Model) seamAt(msg tea.MouseMsg) (int, bool) {
+	for i, p := range m.seamPairs() {
+		za, zb := m.zones.Get(p[0]), m.zones.Get(p[1])
+		if za == nil || zb == nil || za.IsZero() || zb.IsZero() {
+			continue
+		}
+		if msg.X > za.EndX && msg.X < zb.StartX &&
+			msg.Y >= za.StartY && msg.Y <= za.EndY {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+// dragSeamTo moves the held seam to the pointer's column. The offset is kept
+// per layout mode — each arrangement holds its own shape — and clamped to
+// what the two columns can trade, so dragging back after hitting the floor
+// answers immediately instead of unwinding a phantom debt.
+func (m *Model) dragSeamTo(x int) {
+	dx := x - m.dragLastX
+	if dx == 0 {
+		return
+	}
+	m.dragLastX = x
+	mode := m.layoutMode()
+	deltas := m.seamDrag[mode]
+	for len(deltas) <= m.dragSeam {
+		deltas = append(deltas, 0)
+	}
+	m.seamDrag[mode] = deltas
+	want := deltas[m.dragSeam] + dx
+	deltas[m.dragSeam] = 0 // measure the columns as the other seams leave them
+	cols := m.bandCols(m.bandWidth())
+	if m.dragSeam < len(cols)-1 {
+		deltas[m.dragSeam] = clampSeam(want, cols[m.dragSeam], cols[m.dragSeam+1])
+	}
+	m.resize()
+}
+
 // overGitPane reports whether a mouse event lands in the git pane. Scrolling
 // follows the pointer rather than the focused pane, the way a terminal does.
 func (m Model) overGitPane(msg tea.MouseMsg) bool {
@@ -2630,6 +2811,7 @@ func (m Model) paneUnder(msg tea.MouseMsg) (int, bool) {
 		pane int
 	}{
 		{"pane:claude", paneClaude},
+		{"pane:ide", paneIDE},
 		{"pane:diff", paneDiff},
 		{"pane:term", paneTerm},
 		{"pane:issues", paneIssues},
@@ -2646,6 +2828,8 @@ func paneZoneID(pane int) string {
 	switch pane {
 	case paneClaude:
 		return "pane:claude"
+	case paneIDE:
+		return "pane:ide"
 	case paneTerm:
 		return "pane:term"
 	case paneDiff:
@@ -2892,6 +3076,9 @@ func (m Model) handleClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 					return m.clickGitFile(true, i)
 				}
 			}
+		}
+		if m.threePane() && m.clicked(msg, "pane:ide") {
+			return m.clickIDE(msg)
 		}
 		switch {
 		case m.clicked(msg, "pane:claude"):
