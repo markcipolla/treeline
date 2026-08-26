@@ -685,6 +685,19 @@ func (m Model) keyGit(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "r":
 		return m, m.reloadGit()
+	case "o":
+		// hand the file to the ide pane: the git pane says what changed,
+		// the editor is next door
+		if fs, _, ok := m.selectedGitFile(); ok {
+			mm, fcmd := m.focusPane(paneIDE)
+			m2 := mm.(Model)
+			if m2.pane != paneIDE {
+				return m2, fcmd // no worktree to edit in
+			}
+			cmd := m2.openIDEFile(fs.Path)
+			return m2, tea.Batch(fcmd, cmd)
+		}
+		return m, nil
 	}
 	return m, nil
 }
@@ -837,7 +850,7 @@ func (m Model) gitPaneContent(w, h int) (string, string) {
 	}
 
 	// files mode: unstaged | staged side by side, preview below
-	title := "git — files · space stage · enter hunks · l log · b diff"
+	title := "git — files · space stage · enter hunks · o edit · l log · b diff"
 	if len(m.gitUnstaged) == 0 && len(m.gitStaged) == 0 {
 		return title, dimStyle.Render("working tree clean")
 	}

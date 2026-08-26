@@ -139,21 +139,32 @@ neighbour's edge.
 ### The ide pane
 
 A scaled-down port of [croft](https://github.com/vitali87/croft) sitting
-between claude and git: a file explorer over the selected worktree beside a
-syntax-highlighted view of the open file. `enter` unfolds a directory or
-opens a file, `e` drops into an editable buffer, `ctrl+s` writes it back
-(and refreshes the git pane), and `esc` climbs back out — editor → file →
-tree. The wheel scrolls whichever half the pointer is over, a click opens
-what it lands on, and unsaved edits pin the pane in place so moving through
-the issues list can't throw them away.
+between claude and git: a file explorer over the selected worktree beside
+the open files, each in its own tab, syntax-highlighted, with a git gutter
+marking the lines the worktree changed. `enter` unfolds a directory or opens
+a file, `e` drops into an editable buffer, `ctrl+s` writes it back (and
+refreshes the git pane), and `esc` climbs back out — editor → file → tree.
+`o` in the git pane's file lists opens the selected file here. The wheel
+scrolls whichever half the pointer is over, and a click opens what it lands
+on.
+
+The pane keeps its footing while claude edits the same worktree: the tree
+re-reads, clean buffers follow the disk, and dirty ones are marked stale
+rather than losing either side. A save onto a file that changed underneath
+is refused — `r` reloads it, `R` overwrites — and unsaved edits pin the pane
+so moving through the issues list can't discard them. Saves keep the file's
+own tabs and line endings on every line the edit didn't touch.
 
 | Key | Action |
 | --- | --- |
 | `↑` `↓` | move through the tree / the open file |
 | `enter` | unfold a directory, open a file, edit the open file |
-| `h` / `l` | fold / unfold (and climb to the parent) |
+| `/` | tree: filter by path · file: find (`n`/`N` walk the matches) |
 | `e` | edit the open file, starting at the line under the cursor |
-| `ctrl+s` | save |
+| `ctrl+s` | save (`R` saves over a disk change, `r` reloads instead) |
+| `[` `]` | previous / next tab |
+| `x` | close the tab (`x` again drops unsaved edits) |
+| `a` `R` `d` | tree: new file (`dir/` for a directory), rename, delete (`d` again) |
 | `esc` | stop editing → back to the file → back to the tree |
 
 ### The git pane
