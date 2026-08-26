@@ -526,3 +526,81 @@ func hunkRange(s string) (start, count int) {
 	}
 	return start, count
 }
+
+// GrepMatch is one matching line.
+type GrepMatch struct {
+	Line int // 1-based, as git reports it
+	Text string
+}
+
+// GrepFile collects one file's matches, in the order git found them.
+type GrepFile struct {
+	Path    string
+	Matches []GrepMatch
+}
+
+// Grep searches dir for a fixed, case-insensitive substring — tracked files
+// and untracked ones alike, binaries and ignored paths left out — and returns
+// the hits grouped by file. more reports that a cap cut the results short.
+//
+// git grep exits 1 with an empty stdout when nothing matches; that is an
+// answer, not a failure, so only a non-empty stderr counts as an error.
+func Grep(dir, query string, maxFiles, maxMatches int) (files []GrepFile, more bool, err error) {
+	if strings.TrimSpace(query) == "" || dir == "" {
+		return nil, false, nil
+	}
+	// -e keeps a query starting with a dash from being read as a flag
+	out, runErr := run(dir, "grep", "-z", "-n", "-I", "-i", "-F",
+		"--untracked", "--no-color", "-e", query)
+	if out == "" {
+		if runErr != nil && !strings.HasSuffix(runErr.Error(), "exit status 1") {
+			return nil, false, runErr
+		}
+		return nil, false, nil
+	}
+	at := map[string]int{}
+	total := 0
+	for _, rec := range strings.Split(out, "\n") {
+		path, line, text, ok := parseGrepRecord(rec)
+		if !ok {
+			continue
+		}
+		i, seen := at[path]
+		if !seen {
+			if len(files) >= maxFiles {
+				more = true
+				continue
+			}
+			files = append(files, GrepFile{Path: path})
+			i = len(files) - 1
+			at[path] = i
+		}
+		if total >= maxMatches {
+			more = true
+			break
+		}
+		files[i].Matches = append(files[i].Matches, GrepMatch{Line: line, Text: text})
+		total++
+	}
+	return files, more, nil
+}
+
+// parseGrepRecord splits one `git grep -z -n` record: the path and the line
+// number are NUL-terminated, the matching text runs to the end. NUL delimiters
+// mean a path holding a colon or a space still parses.
+func parseGrepRecord(rec string) (path string, line int, text string, ok bool) {
+	p := strings.IndexByte(rec, 0)
+	if p < 0 {
+		return "", 0, "", false
+	}
+	rest := rec[p+1:]
+	q := strings.IndexByte(rest, 0)
+	if q < 0 {
+		return "", 0, "", false
+	}
+	n, err := strconv.Atoi(rest[:q])
+	if err != nil {
+		return "", 0, "", false
+	}
+	return rec[:p], n, rest[q+1:], true
+}
