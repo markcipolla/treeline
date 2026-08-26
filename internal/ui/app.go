@@ -237,6 +237,10 @@ type Model struct {
 	// pendSelect is a worktree we want selected but which the worktree list
 	// hasn't caught up with yet (a just-created one); worktreesMsg retries it.
 	pendSelect string
+	// the previous run's place, being restored: restore waits for the first
+	// worktree list, restoreIDE for the pane sync that follows the selection.
+	restore    *uiState
+	restoreIDE *ideState
 	err        error
 }
 
@@ -309,6 +313,7 @@ func New(cfg *config.Config, root string) Model {
 	repos := buildRepos(cfg, root)
 
 	return Model{
+		restore:       loadUIState(root),
 		cfg:           cfg,
 		root:          root,
 		base:          repos[0].base,
@@ -436,8 +441,10 @@ func (m Model) JumpPath() string { return m.jumpPath }
 // Close shuts down any embedded sessions the panes started.
 // Close shuts the embedded panes down on the way out. Persisted (tmux-backed)
 // sessions are only detached, so the claude running in them keeps its context
-// and the next launch attaches straight back to it.
+// and the next launch attaches straight back to it. The user's place is
+// written out too, for the next launch to restore.
 func (m Model) Close() {
+	m.saveUIState()
 	for _, s := range m.terms {
 		s.close()
 	}
@@ -485,6 +492,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				var mm tea.Model
 				mm, focus = m.focusPane(paneClaude)
 				m = mm.(Model)
+			}
+		}
+		// the first list is the moment the previous run's place can come
+		// back: the row it was on, the pane it was in — the ide follows once
+		// syncPanes points it at the selection. An explicit pendSelect wins.
+		if r := m.restore; r != nil {
+			m.restore = nil
+			if focus == nil && r.Selected != "" && m.selectWorktree(r.Selected) {
+				m.restoreIDE = &r.IDE
+				if m.paneEnabled(r.Pane) {
+					var mm tea.Model
+					mm, focus = m.focusPane(r.Pane)
+					m = mm.(Model)
+				}
 			}
 		}
 		if !m.paneEnabled(m.pane) {
@@ -2404,6 +2425,12 @@ func (m *Model) syncPanes() tea.Cmd {
 
 	if dir := m.claudeDir(); dir != m.ideFor {
 		m.resetIDE(dir) // keeps its place instead when edits are unsaved
+	}
+	if r := m.restoreIDE; r != nil && m.ideFor != "" {
+		m.restoreIDE = nil
+		if r.For == m.ideFor {
+			cmds = append(cmds, m.applyIDEState(*r))
+		}
 	}
 
 	if dir := m.claudeDir(); dir != m.gitFor {
