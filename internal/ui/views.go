@@ -310,12 +310,13 @@ func (m Model) viewPanels() string {
 	claude := m.mark("pane:claude",
 		m.workPart(l.claude, m.pane == paneClaude, claudeTitle, claudeBody))
 
-	ideTitle, ideBody := m.idePaneContent(l.ide.w-4, l.ide.h-4)
+	var ide panePart
 	if noWT && !m.ideAnyDirty() {
-		ideTitle, ideBody = "ide", dimStyle.Render(m.noWorktreeHint())
+		ide = m.workPart(l.ide, m.pane == paneIDE, "ide", dimStyle.Render(m.noWorktreeHint()))
+	} else {
+		ide = m.idePart(l.ide, m.pane == paneIDE)
 	}
-	ide := m.mark("pane:ide",
-		m.workPart(l.ide, m.pane == paneIDE, ideTitle, ideBody))
+	ide = m.mark("pane:ide", ide)
 
 	gitTitle, gitBody := m.gitPaneContent(l.git.w-4, l.git.h-4)
 	if wt := m.selectedRef().wt; wt != nil && wt.Prunable {
@@ -383,6 +384,25 @@ func (m Model) viewPanels() string {
 		return frame(band{{issues}, {claude}, {ide}, {git, term}})
 	}
 	return frame(band{{issues}}, band{{claude}, {ide}, {git, term}})
+}
+
+// idePart is the ide pane as a panePart: workPart's chrome with the
+// explorer/editor divider carried into it — ╤ where it meets the title rule
+// and ┴ into the bottom border — so the divider runs the pane's full height
+// instead of hanging between them.
+func (m Model) idePart(b box, focused bool) panePart {
+	title, body := m.idePaneContent(b.w-4, b.h-4)
+	p := m.workPart(b, focused, title, body)
+	dx := m.ideTreeWidth(b.w-4) + 2 // the │ in " │ ", past the body's pad column
+	if len(p.rows) > 1 && dx > 0 && dx < p.w-1 {
+		rs := metaStyle
+		if focused {
+			rs = okStyle
+		}
+		p.rows[1] = rs.Render(strings.Repeat("═", dx) + "╤" + strings.Repeat("═", p.w-dx-1))
+		p.botJoin = []int{dx}
+	}
+	return p
 }
 
 // workPart builds one of the work panes: its title, the ═ rule under it, and
