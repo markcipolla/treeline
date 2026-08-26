@@ -723,12 +723,10 @@ func (m Model) idePaneSize() (w, h int) {
 	return b.w - 4, b.h - 4
 }
 
-// ideTreeWidth is the explorer strip's width: the whole pane while nothing is
-// open, a quarter-ish column beside the editor once something is.
+// ideTreeWidth is the explorer strip's width: a quarter-ish column, held
+// steady whether or not a file is open so the pane doesn't reshape itself
+// the moment one is.
 func (m Model) ideTreeWidth(w int) int {
-	if len(m.ideBufs) == 0 {
-		return w
-	}
 	return clampW(w*30/100, 12, 26)
 }
 
@@ -793,19 +791,16 @@ func (m Model) idePaneContent(w, h int) (string, string) {
 	ch := m.ideContentH()
 	treeW := m.ideTreeWidth(w)
 	tree := m.ideTreeRows(treeW, ch)
-	if len(m.ideBufs) == 0 {
-		for i := 0; i < ch; i++ {
-			if i < len(tree) {
-				rows = append(rows, tree[i])
-			} else {
-				rows = append(rows, "")
-			}
-		}
-		return title, strings.Join(rows, "\n")
-	}
-
 	edW := w - treeW - 3 // " │ " between the halves
-	right := append([]string{m.ideTabBar(edW)}, m.ideEditorRows(edW, m.ideViewH())...)
+	var right []string
+	if len(m.ideBufs) == 0 {
+		// the editor half keeps its place while empty, so opening a file
+		// fills it in rather than reshaping the pane
+		right = []string{"", dimStyle.Render(truncate("enter (or click) opens a file here", edW)),
+			"", dimStyle.Render(truncate("/ filters the tree · a makes a file", edW))}
+	} else {
+		right = append([]string{m.ideTabBar(edW)}, m.ideEditorRows(edW, m.ideViewH())...)
+	}
 	div := dimStyle.Render(" │ ")
 	for i := 0; i < ch; i++ {
 		t, e := "", ""
@@ -1410,7 +1405,7 @@ func clampIdx(v, n int) int {
 func (m *Model) scrollIDERegion(msg tea.MouseMsg, up bool) {
 	w, _ := m.idePaneSize()
 	x, _, ok := m.paneBodyPos(paneIDE, msg)
-	overTree := len(m.ideBufs) == 0 || (ok && x < m.ideTreeWidth(w))
+	overTree := !ok || x < m.ideTreeWidth(w) || len(m.ideBufs) == 0
 	step := 3
 	if up {
 		step = -3
