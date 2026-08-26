@@ -743,9 +743,10 @@ func (m Model) ideContentH() int {
 	return h
 }
 
-// ideViewH is the file half's content rows: the tab bar sits above them.
+// ideViewH is the file half's content rows: the bordered tab bar's three rows
+// sit above them.
 func (m Model) ideViewH() int {
-	h := m.ideContentH() - 1
+	h := m.ideContentH() - 3
 	if h < 1 {
 		h = 1
 	}
@@ -811,7 +812,7 @@ func (m Model) idePaneContent(w, h int) (string, string) {
 		// fills it in rather than reshaping the pane
 		right = strings.Split(ideZeroState(edW, ch), "\n")
 	} else {
-		right = append([]string{m.ideTabBar(edW)}, m.ideEditorRows(edW, m.ideViewH())...)
+		right = append(m.ideTabBar(edW), m.ideEditorRows(edW, m.ideViewH())...)
 	}
 	for i := 0; i < ch; i++ {
 		t, e := "", ""
@@ -852,12 +853,24 @@ func ideZeroState(w, h int) string {
 		maxWidthStyle(w).Render(body))
 }
 
-// ideTabBar is the file half's top row: one tab per open file, the active one
-// styled like a focused pane title, dirty and stale marked on the name.
-func (m Model) ideTabBar(w int) string {
-	active := paneTitleStyle
+// the tab shapes: every tab hangs from the same shelf line, the active one's
+// bottom opens into the editor below it
+var (
+	ideTabBorder = lipgloss.Border{Top: "─", Bottom: "─", Left: "│", Right: "│",
+		TopLeft: "╭", TopRight: "╮", BottomLeft: "┴", BottomRight: "┴"}
+	ideTabActiveBorder = lipgloss.Border{Top: "─", Bottom: " ", Left: "│", Right: "│",
+		TopLeft: "╭", TopRight: "╮", BottomLeft: "┘", BottomRight: "└"}
+)
+
+// ideTabBar is the file half's top rows: one bordered tab per open file, the
+// active one open at the bottom, dirty and stale marked on the name. Three
+// rows tall — ideViewH leaves room for it.
+func (m Model) ideTabBar(w int) []string {
+	activeText := paneTitleStyle
+	activeBorder := subtle
 	if m.pane == paneIDE {
-		active = paneTitleFocus
+		activeText = paneTitleFocus
+		activeBorder = accent
 	}
 	parts := make([]string, 0, len(m.ideBufs))
 	for i, b := range m.ideBufs {
@@ -868,13 +881,23 @@ func (m Model) ideTabBar(w int) string {
 		if b.stale {
 			label += " ⚠"
 		}
-		st := dimStyle
+		st := lipgloss.NewStyle().Border(ideTabBorder).BorderForeground(subtle).Padding(0, 1)
+		txt := dimStyle
 		if i == m.ideCur {
-			st = active
+			st = st.Border(ideTabActiveBorder).BorderForeground(activeBorder)
+			txt = activeText
 		}
-		parts = append(parts, m.zones.Mark(ideTabZoneID(i), st.Render(label)))
+		parts = append(parts, m.zones.Mark(ideTabZoneID(i), st.Render(txt.Render(label))))
 	}
-	return maxWidthStyle(w).Render(strings.Join(parts, dimStyle.Render(" │ ")))
+	row := lipgloss.JoinHorizontal(lipgloss.Top, parts...)
+	lines := strings.Split(maxWidthStyle(w).Render(row), "\n")
+	// the shelf the tabs hang from runs the editor's full width
+	if n := len(lines); n > 0 {
+		if used := lipgloss.Width(row); used < w {
+			lines[n-1] += dimStyle.Render(strings.Repeat("─", w-used))
+		}
+	}
+	return lines
 }
 
 // ideTreeRows is the explorer: the visible window of the tree, the selected
@@ -1503,9 +1526,9 @@ func (m Model) clickIDE(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				y -= 3 // the bordered input bar sits above both halves
 			}
 			w, _ := m.idePaneSize()
-			if x >= m.ideTreeWidth(w) && y >= 1 { // y 0 is the tab bar
+			if x >= m.ideTreeWidth(w) && y >= 3 { // rows 0-2 are the tab bar
 				m.ideFocus = ideFocusFile
-				b.cursor = clampIdx(b.scrollY+y-1, len(b.hl))
+				b.cursor = clampIdx(b.scrollY+y-3, len(b.hl))
 			}
 		}
 	}
