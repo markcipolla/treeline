@@ -146,24 +146,25 @@ type Model struct {
 	termSel     map[string]int        // active tab per directory
 	termScanned map[string]bool       // dirs checked for persisted extra tabs
 
-	// ide pane: file explorer + editor for the selected worktree (idepane.go)
-	ideFor      string          // worktree the pane shows
-	ideExpanded map[string]bool // unfolded directories, by rel path
-	ideTree     []ideEntry      // visible rows, depth-first
-	ideSel      int             // cursor in the tree
-	ideScroll   int             // tree window offset
-	ideFocus    int             // which half has the keys: tree or file
-	ideFile     string          // open file, rel to ideFor; "" = none
-	ideHL       []string        // the open file, highlighted, one row per line
-	ideCursor   int             // current line in the file view
-	ideScrollY  int             // file view window offset
-	ideEditing  bool            // the textarea has the keys
-	ideEditor   textarea.Model
-	ideSavedVal string    // buffer as last loaded/saved; dirty = differs
-	ideRawLines []string  // the file's own lines — the textarea flattens
-	ideCRLF     bool      // tabs and CRLF, and saves restore them (idepane.go)
-	ideDirty    bool      // unsaved edits in the buffer
-	ideSavedAt  time.Time // "saved ✓" flash
+	// ide pane: file explorer + editor tabs for the selected worktree
+	// (idepane.go)
+	ideFor       string          // worktree the pane shows
+	ideExpanded  map[string]bool // unfolded directories, by rel path
+	ideTree      []ideEntry      // visible rows, depth-first (or filter hits)
+	ideSel       int             // cursor in the tree
+	ideScroll    int             // tree window offset
+	ideFocus     int             // which half has the keys: tree or file
+	ideBufs      []*ideBuf       // open files, one tab each
+	ideCur       int             // the active tab
+	ideEditing   bool            // the textarea has the keys
+	ideEditor    textarea.Model
+	ideInput     textinput.Model // the pane's ask-line: filter, find, new, rename
+	ideInputKind int
+	ideFilter    string    // applied tree filter
+	ideFindQ     string    // in-file search query, kept for n/N
+	ideFindHits  []int     // lines of the active buffer matching it
+	ideConfirm   string    // pending destructive action awaiting a second press
+	ideSavedAt   time.Time // "saved ✓" flash
 
 	diffVP      viewport.Model
 	diffRaw     string
@@ -317,6 +318,7 @@ func New(cfg *config.Config, root string) Model {
 		commitSubject: commitSubject,
 		commitBody:    commitBody,
 		ideEditor:     ideEditor,
+		ideInput:      newInput(""),
 		ideExpanded:   map[string]bool{},
 		terms:         map[string]*claudeSession{},
 		termTabs:      map[string][]*termTab{},
@@ -550,6 +552,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.searchInput.SetSuggestions(sugs)
 		return m, nil
 
+	case ideGutterMsg:
+		if msg.dir == m.ideFor {
+			for _, b := range m.ideBufs {
+				if b.rel == msg.rel {
+					b.gutter = msg.marks
+				}
+			}
+		}
+		return m, nil
+
 	case gitStatusMsg:
 		if msg.dir != m.gitFor {
 			return m, nil
@@ -661,6 +673,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if s.dir == m.gitFor && time.Since(m.gitFreshAt) > 3*time.Second {
 			m.gitFreshAt = time.Now()
 			cmds = append(cmds, m.reloadGit(), m.loadSelectedFileDiff(), m.loadWorktrees())
+			if s.dir == m.ideFor {
+				// the ide pane follows the same edits: the tree re-reads,
+				// clean buffers reload, dirty ones are marked stale
+				cmds = append(cmds, m.refreshIDEDisk()...)
+			}
 		}
 		return m, tea.Batch(cmds...)
 
@@ -873,10 +890,10 @@ func (m *Model) resize() {
 		}
 		m.diffVP.Width = l.git.w - 2
 		m.diffVP.Height = l.git.h - 4
-		// the ide editor fills the pane beside the explorer strip. Sized for
-		// the strip even while no file is open (the tree spreads out then):
-		// opening a file doesn't come back through here.
-		ideW, ideH := l.ide.w-4, l.ide.h-4
+		// the ide editor fills the pane beside the explorer strip, under the
+		// tab bar. Sized for the strip even while no file is open (the tree
+		// spreads out then): opening a file doesn't come back through here.
+		ideW, ideH := l.ide.w-4, l.ide.h-5
 		edW := ideW - clampW(ideW*30/100, 12, 26) - 3
 		if edW < 10 {
 			edW = 10
@@ -886,6 +903,7 @@ func (m *Model) resize() {
 		}
 		m.ideEditor.SetWidth(edW)
 		m.ideEditor.SetHeight(ideH)
+		m.ideInput.Width = ideW - 4
 		m.commitSubject.Width = l.git.w - 10
 		m.commitBody.SetWidth(l.git.w - 6)
 		bh := l.git.h - 13
@@ -1789,8 +1807,9 @@ func (m Model) keyMain(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.pane == paneDiff && m.gitMode == gitModeCommit && k.String() != "ctrl+q" {
 			return m.keyGit(k) // the form owns tab/enter while typing
 		}
-		if m.pane == paneIDE && m.ideEditing && k.String() != "ctrl+q" {
-			return m.keyIDE(k) // the buffer owns tab/enter while editing
+		if m.pane == paneIDE && (m.ideEditing || m.ideInputKind != ideInputNone) &&
+			k.String() != "ctrl+q" {
+			return m.keyIDE(k) // the buffer or ask-line owns tab/enter
 		}
 		switch k.String() {
 		case "tab", "ctrl+q":
@@ -1977,10 +1996,10 @@ func (m Model) focusPane(p int) (tea.Model, tea.Cmd) {
 	if p == paneIDE {
 		if dir := m.claudeDir(); dir != m.ideFor {
 			m.resetIDE(dir)
-		} else if len(m.ideTree) == 0 {
+		} else if len(m.ideTree) == 0 && m.ideFilter == "" {
 			m.refreshIDETree()
 		}
-		if m.ideEditing {
+		if m.ideEditing || m.ideInputKind != ideInputNone {
 			return m, textarea.Blink
 		}
 	}
