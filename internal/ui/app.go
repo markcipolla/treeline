@@ -1798,6 +1798,14 @@ func (m Model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) keyMain(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.threePane() && !m.filtering {
+		// shift+arrows move between the panes from anywhere, even the panes
+		// that otherwise swallow every key
+		switch k.String() {
+		case "shift+right":
+			return m.focusPane(m.cyclePane(1))
+		case "shift+left":
+			return m.focusPane(m.cyclePane(-1))
+		}
 		if m.pane == paneClaude {
 			return m.keyClaude(k) // claude gets everything; ctrl+q leaves
 		}
