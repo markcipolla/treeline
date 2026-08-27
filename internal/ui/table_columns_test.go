@@ -6,6 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/markcipolla/treeline/internal/gitx"
 	"github.com/markcipolla/treeline/internal/linear"
 )
 
@@ -14,10 +15,18 @@ func withIssues(m Model) Model {
 	m.authed = true
 	m.loadingWT, m.loadingIssues = false, false
 	m.issues = []linear.Issue{
-		{Identifier: "LAB-1", Title: "Add a column for the assignee", State: "In Progress", StateType: "started", Assignee: "Mark Cipolla", Priority: 2},
+		{Identifier: "LAB-1", Title: "Add a column for the assignee", State: "In Progress", StateType: "started", Assignee: "Mark Cipolla", AssigneeIsMe: true, Priority: 2},
 		{Identifier: "LAB-2", Title: "A card assigned to someone else", State: "Backlog", StateType: "backlog", Assignee: "Alexandra Kowalczyk"},
 		{Identifier: "LAB-3", Title: "An unassigned card", State: "Backlog", StateType: "backlog"},
 	}
+	// LAB-2 is someone else's, so it only stays in the column because a
+	// worktree holds it (see showIssue). The branch has to carry the key in
+	// its own segment, the way branch.Name writes it.
+	m.wts = append(m.wts, gitx.Worktree{
+		Root:   m.root,
+		Path:   m.root + "/.worktrees/lab-2",
+		Branch: "feature/LAB-2/a-card-assigned-to-someone-else",
+	})
 	m.refreshRows()
 	return m
 }
