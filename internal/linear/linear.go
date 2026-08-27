@@ -25,7 +25,12 @@ type Issue struct {
 	State       string
 	StateType   string
 	Assignee    string // display name, empty when unassigned
-	Labels      []string
+	// AssigneeIsMe is Linear's own answer to "is this mine", rather than a
+	// name comparison: the viewer's name is often an email until they set
+	// one, and Assignee above is a shortened label, so the two do not match
+	// reliably. False on an unassigned card.
+	AssigneeIsMe bool
+	Labels       []string
 }
 
 type Client struct {
@@ -51,6 +56,7 @@ type issueNode struct {
 	Assignee *struct {
 		Name        string `json:"name"`
 		DisplayName string `json:"displayName"`
+		IsMe        bool   `json:"isMe"`
 	} `json:"assignee"`
 	Labels struct {
 		Nodes []struct {
@@ -64,21 +70,23 @@ func (n issueNode) toIssue() Issue {
 	for _, l := range n.Labels.Nodes {
 		labels = append(labels, l.Name)
 	}
-	assignee := ""
+	assignee, mine := "", false
 	if n.Assignee != nil {
 		assignee = assigneeLabel(n.Assignee.Name, n.Assignee.DisplayName)
+		mine = n.Assignee.IsMe
 	}
 	return Issue{
-		ID:          n.ID,
-		Identifier:  n.Identifier,
-		Title:       n.Title,
-		Description: n.Description,
-		Priority:    int(n.Priority),
-		URL:         n.URL,
-		State:       n.State.Name,
-		StateType:   n.State.Type,
-		Assignee:    assignee,
-		Labels:      labels,
+		ID:           n.ID,
+		Identifier:   n.Identifier,
+		Title:        n.Title,
+		Description:  n.Description,
+		Priority:     int(n.Priority),
+		URL:          n.URL,
+		State:        n.State.Name,
+		StateType:    n.State.Type,
+		Assignee:     assignee,
+		AssigneeIsMe: mine,
+		Labels:       labels,
 	}
 }
 
@@ -156,7 +164,7 @@ const assignedIssuesQuery = `query {
       nodes {
         id identifier title description priority url
         state { name type }
-        assignee { name displayName }
+        assignee { name displayName isMe }
         labels { nodes { name } }
       }
     }
@@ -220,7 +228,7 @@ func ParseSearchQuery(raw string) SearchQuery {
 const issueSelection = `
       id identifier title description priority url
       state { name type }
-      assignee { name displayName }
+      assignee { name displayName isMe }
       labels { nodes { name } }`
 
 const searchIssuesQuery = `query Search($term: String!) {
@@ -281,7 +289,7 @@ const issueQuery = `query Issue($id: String!) {
   issue(id: $id) {
     id identifier title description priority url
     state { name type }
-    assignee { name displayName }
+    assignee { name displayName isMe }
     labels { nodes { name } }
   }
 }`

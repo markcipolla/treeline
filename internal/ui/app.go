@@ -1164,6 +1164,18 @@ func (m Model) gridTop() int {
 
 // refreshRows rebuilds the table: issues grouped by status (active work
 // first), each with its worktree when one exists, then remaining worktrees.
+// showIssue decides whether a card belongs in the issues column. Someone
+// else's card earns its place only while a worktree holds it — a review or a
+// hand-off you are actually working on — and loses it when that worktree
+// goes. Unassigned cards are nobody else's, so they stay.
+//
+// The check is on wt rather than on the raw worktree list: wt is the one the
+// column would draw, so a primary or prunable checkout does not count as
+// still working on it.
+func showIssue(is linear.Issue, wt *gitx.Worktree) bool {
+	return wt != nil || is.Assignee == "" || is.AssigneeIsMe
+}
+
 func (m *Model) refreshRows() {
 	q := strings.ToLower(strings.TrimSpace(m.filterInput.Value()))
 
@@ -1208,6 +1220,9 @@ func (m *Model) refreshRows() {
 	for i := range all {
 		is := &all[i]
 		wt := linked[is.Identifier]
+		if !showIssue(*is, wt) {
+			continue
+		}
 		if q != "" && !strings.Contains(issueHaystack(*is, wt, m.root), q) {
 			continue
 		}
