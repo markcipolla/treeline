@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Install treeline: build the sources this script sits in and put the binary
+# on PATH. Builds with -o rather than `go install` — in a shell where mise
+# owns go, GOBIN is a per-Go-version directory PATH may not include, so an
+# install can look successful while an older copy keeps running.
+#
+#   scripts/install              # ~/.local/bin/treeline
+#   scripts/install /some/bin    # elsewhere
+set -euo pipefail
+
+src="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+dest="${1:-$HOME/.local/bin}"
+
+# go may only be pinned inside the treeline repo (mise), so resolve it from
+# there — the script then works from any directory.
+go_bin="$(command -v go || true)"
+if [ -z "$go_bin" ] && command -v mise >/dev/null; then
+  go_bin="$(mise --cd "$src" which go 2>/dev/null || true)"
+fi
+if [ -z "$go_bin" ]; then
+  echo "no go toolchain found (install go, or mise with the repo's go pin)" >&2
+  exit 1
+fi
+
+mkdir -p "$dest"
+"$go_bin" build -C "$src" -o "$dest/treeline" .
+echo "installed $dest/treeline ($("$dest/treeline" version))"
+
+case ":$PATH:" in
+  *":$dest:"*) ;;
+  *) echo "warning: $dest is not on PATH" >&2 ;;
+esac

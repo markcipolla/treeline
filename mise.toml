@@ -7,3 +7,9 @@ go = "1.24"
 # from that repo's directory instead.
 [tasks.dev]
 run = '{{config_root}}/scripts/hot-reload'
+
+# install: build and put the binary at ~/.local/bin/treeline (PATH-stable
+# regardless of which mise go is active — see the script for why not
+# `go install`)
+[tasks.install]
+run = '{{config_root}}/scripts/install'
