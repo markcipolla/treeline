@@ -1,4 +1,4 @@
-package ui
+package ide
 
 import (
 	"path/filepath"
@@ -105,8 +105,8 @@ var ideNameIcons = map[string]string{
 // known name wins over the extension, and anything unrecognised is a plain
 // file. The empty string means icons are switched off, and every caller
 // treats that as "draw nothing".
-func (m Model) ideFileIcon(rel string, dir, expanded bool) string {
-	if m.cfg == nil || !m.cfg.Icons() {
+func (p *Pane) ideFileIcon(rel string, dir, expanded bool) string {
+	if !p.icons {
 		return ""
 	}
 	if dir {
@@ -128,8 +128,8 @@ func (m Model) ideFileIcon(rel string, dir, expanded bool) string {
 // ideIconCell is the icon plus its trailing space, ready to sit in a row —
 // or nothing at all when icons are off, so the row closes up rather than
 // leaving a gap.
-func (m Model) ideIconCell(rel string, dir, expanded bool) string {
-	if ic := m.ideFileIcon(rel, dir, expanded); ic != "" {
+func (p *Pane) ideIconCell(rel string, dir, expanded bool) string {
+	if ic := p.ideFileIcon(rel, dir, expanded); ic != "" {
 		return ic + " "
 	}
 	return ""

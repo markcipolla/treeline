@@ -23,6 +23,7 @@ import (
 	"github.com/markcipolla/treeline/internal/config"
 	"github.com/markcipolla/treeline/internal/github"
 	"github.com/markcipolla/treeline/internal/gitx"
+	"github.com/markcipolla/treeline/internal/ide"
 	"github.com/markcipolla/treeline/internal/linear"
 	"github.com/markcipolla/treeline/internal/tmux"
 )
@@ -151,33 +152,9 @@ type Model struct {
 	termSel     map[string]int        // active tab per directory
 	termScanned map[string]bool       // dirs checked for persisted extra tabs
 
-	// ide pane: file explorer + editor tabs for the selected worktree
-	// (idepane.go)
-	ideFor       string          // worktree the pane shows
-	ideExpanded  map[string]bool // unfolded directories, by rel path
-	ideTree      []ideEntry      // visible rows, depth-first (or filter hits)
-	ideSel       int             // cursor in the tree
-	ideScroll    int             // tree window offset
-	ideFocus     int             // which half has the keys: tree or file
-	ideBufs      []*ideBuf       // open files, one tab each
-	ideCur       int             // the active tab
-	ideEditing   bool            // the textarea has the keys
-	ideEditor    textarea.Model
-	ideInput     textinput.Model // the ask-line: filter, find, search, new, rename
-	ideInputKind int
-	ideFilter    string          // applied tree filter
-	ideFindQ     string          // in-file search query, kept for n/N
-	ideFindHits  []int           // lines of the active buffer matching it
-	ideGrepQ     string          // worktree-wide search query; non-empty shows results
-	ideGrepFiles []gitx.GrepFile // hits grouped by file, as git found them
-	ideGrepRows  []ideGrepRow    // the visible results list, folds applied
-	ideGrepFold  map[string]bool // collapsed files in the results list
-	ideGrepSel   int             // cursor in the results list
-	ideGrepScrol int             // results window offset
-	ideGrepMore  bool            // a cap cut the results short
-	ideGrepping  bool            // a search is in flight
-	ideConfirm   string          // pending destructive action awaiting a second press
-	ideSavedAt   time.Time       // "saved ✓" flash
+	// the ide pane: file explorer + editor tabs for the selected worktree
+	// (internal/ide, shared with cmd/tide; idepane.go is treeline's seam)
+	ide ide.Pane
 
 	diffVP      viewport.Model
 	diffRaw     string
@@ -250,7 +227,7 @@ type Model struct {
 	// the previous run's place, being restored: restore waits for the first
 	// worktree list, restoreIDE for the pane sync that follows the selection.
 	restore    *uiState
-	restoreIDE *ideState
+	restoreIDE *ide.State
 	err        error
 }
 
@@ -307,20 +284,13 @@ func New(cfg *config.Config, root string) Model {
 	commitBody.ShowLineNumbers = false
 	commitBody.CharLimit = 0
 
-	// the pane draws the editor itself, highlighted (see ideEditorRows); the
-	// textarea only keeps the buffer and cursor, and its width is set past
-	// any real line so it never soft-wraps
-	ideEditor := textarea.New()
-	ideEditor.ShowLineNumbers = false
-	ideEditor.CharLimit = 0
-	ideEditor.MaxHeight = 0
-	ideEditor.MaxWidth = 0
-	ideEditor.Prompt = ""
-	ideEditor.SetWidth(ideEditorWidth)
-
 	ghOwner, ghRepo, ghOK := github.RepoFromRemote(root)
 
 	repos := buildRepos(cfg, root)
+
+	// the ide pane marks its clickable rows through the app's zone manager,
+	// so the two share one
+	zones := zone.New()
 
 	return Model{
 		restore:       loadUIState(root),
@@ -329,7 +299,7 @@ func New(cfg *config.Config, root string) Model {
 		base:          repos[0].base,
 		repos:         repos,
 		pendRepo:      repos[0],
-		zones:         zone.New(),
+		zones:         zones,
 		table:         t,
 		ci:            map[string]github.Status{},
 		ghToken:       github.Token(cfg.GitHub.Token),
@@ -341,10 +311,7 @@ func New(cfg *config.Config, root string) Model {
 		setInputs:     setInputs,
 		commitSubject: commitSubject,
 		commitBody:    commitBody,
-		ideEditor:     ideEditor,
-		ideInput:      newInput(""),
-		ideExpanded:   map[string]bool{},
-		ideGrepFold:   map[string]bool{},
+		ide:           ide.New(zones, cfg.Icons()),
 		seamDrag:      map[int][]int{},
 		dragSeam:      -1,
 		terms:         map[string]*claudeSession{},
@@ -595,18 +562,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.searchInput.SetSuggestions(sugs)
 		return m, nil
 
-	case ideGrepMsg:
-		m.applyIDEGrepMsg(msg)
+	case ide.GrepMsg:
+		m.ide.ApplyGrep(msg)
 		return m, nil
-	case ideGutterMsg:
-		if msg.dir == m.ideFor {
-			for _, b := range m.ideBufs {
-				if b.rel == msg.rel {
-					b.gutter = msg.marks
-				}
-			}
-		}
+	case ide.GutterMsg:
+		m.ide.ApplyGutter(msg)
 		return m, nil
+	case ide.ChangedMsg:
+		// the pane changed the worktree (a save, a new file, …): the git
+		// pane exists to show exactly that kind of edit
+		return m, m.reloadGit()
 
 	case gitStatusMsg:
 		if msg.dir != m.gitFor {
@@ -721,10 +686,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if s.dir == m.gitFor && time.Since(m.gitFreshAt) > 3*time.Second {
 			m.gitFreshAt = time.Now()
 			cmds = append(cmds, m.reloadGit(), m.loadSelectedFileDiff(), m.loadWorktrees())
-			if s.dir == m.ideFor {
+			if s.dir == m.ide.Dir() {
 				// the ide pane follows the same edits: the tree re-reads,
 				// clean buffers reload, dirty ones are marked stale
-				cmds = append(cmds, m.refreshIDEDisk()...)
+				cmds = append(cmds, m.ide.RefreshDisk()...)
 			}
 		}
 		return m, tea.Batch(cmds...)
@@ -938,9 +903,10 @@ func (m *Model) resize() {
 		}
 		m.diffVP.Width = l.git.w - 2
 		m.diffVP.Height = l.git.h - 4
-		// the ide editor is drawn by the pane itself and never resizes; only
-		// its ask-line follows the pane's width
-		m.ideInput.Width = l.ide.w - 8
+		// the ide editor is drawn by the pane itself and never resizes; the
+		// pane's content box and its ask-line follow the pane's width
+		m.ide.SetSize(l.ide.w-4, l.ide.h-4)
+		m.ide.SetInputWidth(l.ide.w - 8)
 		m.commitSubject.Width = l.git.w - 10
 		m.commitBody.SetWidth(l.git.w - 6)
 		bh := l.git.h - 13
@@ -1867,7 +1833,7 @@ func (m Model) keyMain(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.pane == paneDiff && m.gitMode == gitModeCommit && k.String() != "ctrl+q" {
 			return m.keyGit(k) // the form owns tab/enter while typing
 		}
-		if m.pane == paneIDE && (m.ideEditing || m.ideInputKind != ideInputNone) &&
+		if m.pane == paneIDE && (m.ide.Editing() || m.ide.InputActive()) &&
 			k.String() != "ctrl+q" {
 			return m.keyIDE(k) // the buffer or ask-line owns tab/enter
 		}
@@ -2054,12 +2020,8 @@ func (m Model) focusPane(p int) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.reloadGit(), m.loadSelectedFileDiff())
 	}
 	if p == paneIDE {
-		if dir := m.claudeDir(); dir != m.ideFor {
-			m.resetIDE(dir)
-		} else if len(m.ideTree) == 0 && m.ideFilter == "" {
-			m.refreshIDETree()
-		}
-		if m.ideEditing || m.ideInputKind != ideInputNone {
+		m.ideReady().SetWorktree(m.claudeDir())
+		if m.ide.Editing() || m.ide.InputActive() {
 			return m, textarea.Blink
 		}
 	}
@@ -2454,13 +2416,12 @@ func (m *Model) syncPanes() tea.Cmd {
 		}
 	}
 
-	if dir := m.claudeDir(); dir != m.ideFor {
-		m.resetIDE(dir) // keeps its place instead when edits are unsaved
-	}
-	if r := m.restoreIDE; r != nil && m.ideFor != "" {
+	// keeps its place instead when edits are unsaved
+	m.ideReady().SetWorktree(m.claudeDir())
+	if r := m.restoreIDE; r != nil && m.ide.Dir() != "" {
 		m.restoreIDE = nil
-		if r.For == m.ideFor {
-			cmds = append(cmds, m.applyIDEState(*r))
+		if r.For == m.ide.Dir() {
+			cmds = append(cmds, m.ide.ApplyState(*r))
 		}
 	}
 

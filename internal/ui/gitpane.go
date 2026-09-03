@@ -17,10 +17,6 @@ import (
 
 var errUntrackedHunks = errors.New("untracked file — space stages it whole")
 
-func maxWidthStyle(w int) lipgloss.Style {
-	return lipgloss.NewStyle().MaxWidth(w)
-}
-
 // The right panel is the git pane: a two-column file picker over unstaged
 // and staged changes with per-file diffs (default), hunk-level staging, the
 // commit log, and the whole branch-vs-base diff.
@@ -746,7 +742,8 @@ func (m Model) keyGit(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m2.pane != paneIDE {
 				return m2, fcmd // no worktree to edit in
 			}
-			cmd := m2.openIDEFile(fs.Path)
+			cmd := m2.ideReady().OpenFile(fs.Path)
+			m2.pullIDEErr()
 			return m2, tea.Batch(fcmd, cmd)
 		}
 		return m, nil

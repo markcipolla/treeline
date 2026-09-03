@@ -2,24 +2,28 @@ package ui
 
 import (
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+// The capture/apply mechanics live with the pane (internal/ide); these tests
+// cover treeline's side: the snapshot riding the ui state file and a fresh
+// launch feeding it back through the worktree sync.
+
 // stateTestModel is ideTestModel worked into a mid-session shape: a folder
 // unfolded, a dirty buffer, a second tab, the ide pane focused.
 func stateTestModel(t *testing.T) Model {
 	t.Helper()
 	m := ideTestModel(t, 200)
-	m.ideExpanded["sub"] = true
-	m.refreshIDETree()
-	_ = m.openIDEFile("main.go")
+	m = keyIDE(t, m, tea.KeyMsg{Type: tea.KeyEnter}) // row 0 is sub/: unfold it
+	_ = m.ideReady().OpenFile("main.go")
 	m = keyIDE(t, m, runes("e"))
 	m = typeIDE(t, m, "zz")
 	m = keyIDE(t, m, tea.KeyMsg{Type: tea.KeyEsc}) // dirty now
-	_ = m.openIDEFile(filepath.Join("sub", "util.go"))
+	_ = m.ideReady().OpenFile(filepath.Join("sub", "util.go"))
 	mm, _ := m.focusPane(paneIDE)
 	return mm.(Model)
 }
@@ -68,37 +72,35 @@ func TestUIStateRestoresPlace(t *testing.T) {
 	if m2.pane != paneIDE {
 		t.Errorf("pane = %d, want paneIDE", m2.pane)
 	}
-	if !m2.ideExpanded["sub"] {
+	got := m2.ide.Capture()
+	if !slices.Contains(got.Expanded, "sub") {
 		t.Error("sub/ should come back unfolded")
 	}
-	if len(m2.ideBufs) != 2 || m2.ideBufs[0].rel != "main.go" ||
-		m2.ideBufs[1].rel != filepath.Join("sub", "util.go") {
-		t.Fatalf("tabs = %+v, want main.go and sub/util.go", m2.ideBufs)
+	if tabs := m2.ide.Tabs(); len(tabs) != 2 || tabs[0] != "main.go" ||
+		tabs[1] != filepath.Join("sub", "util.go") {
+		t.Fatalf("tabs = %v, want main.go and sub/util.go", tabs)
 	}
-	if m2.ideCur != 1 {
-		t.Errorf("active tab = %d, want 1 (util.go)", m2.ideCur)
+	if got.Cur != 1 {
+		t.Errorf("active tab = %d, want 1 (util.go)", got.Cur)
 	}
-	b := m2.ideBufs[0]
-	if !b.dirty || !strings.HasPrefix(b.val, "zz") || b.stale {
-		t.Errorf("main.go should be dirty with its edits, not stale: dirty=%v stale=%v val=%q",
-			b.dirty, b.stale, b.val)
-	}
-	if !strings.HasPrefix(b.hl[0], "\x1b") && !strings.Contains(b.hl[0], "zz") {
-		t.Errorf("the restored buffer should be highlighted, got %q", b.hl[0])
+	if !got.Bufs[0].Dirty || !strings.HasPrefix(got.Bufs[0].Val, "zz") {
+		t.Errorf("main.go should be dirty with its edits: dirty=%v val=%q",
+			got.Bufs[0].Dirty, got.Bufs[0].Val)
 	}
 }
 
 // TestUIStateStale: disk moved on under the persisted edits — the buffer
-// comes back dirty and marked stale, the way an in-session disk change would.
+// comes back dirty, its edits intact. (The stale marking itself is the pane's
+// business, tested in internal/ide.)
 func TestUIStateStale(t *testing.T) {
 	m := stateTestModel(t)
 	s := m.captureUIState()
 	writeIDEFile(t, m.wts[0].Path, "main.go", "package main // rewritten\n")
 
 	m2 := relaunch(t, m, s)
-	b := m2.ideBufs[0]
-	if !b.dirty || !b.stale {
-		t.Errorf("dirty=%v stale=%v, want both after the disk changed", b.dirty, b.stale)
+	got := m2.ide.Capture()
+	if len(got.Bufs) == 0 || !got.Bufs[0].Dirty || !strings.HasPrefix(got.Bufs[0].Val, "zz") {
+		t.Errorf("bufs = %+v, want main.go still dirty with its edits", got.Bufs)
 	}
 }
 
@@ -111,7 +113,7 @@ func TestUIStateGoneWorktree(t *testing.T) {
 	s.IDE.For = s.Selected
 
 	m2 := relaunch(t, m, s)
-	if len(m2.ideBufs) != 0 {
-		t.Errorf("no tabs should be restored for a vanished worktree, got %d", len(m2.ideBufs))
+	if tabs := m2.ide.Tabs(); len(tabs) != 0 {
+		t.Errorf("no tabs should be restored for a vanished worktree, got %d", len(tabs))
 	}
 }

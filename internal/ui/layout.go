@@ -245,16 +245,6 @@ func splitRight(h int) (gitH, termH int) {
 	return gitH, termH
 }
 
-func clampW(v, lo, hi int) int {
-	if v < lo {
-		return lo
-	}
-	if v > hi {
-		return hi
-	}
-	return v
-}
-
 // issuesColWidth is the issues column's width in a column layout. Unfocused
 // it keeps base, a share of the terminal; focused it grows towards whatever
 // the grid needs to show every column, so selecting the list stops truncating
