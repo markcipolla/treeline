@@ -247,18 +247,7 @@ func TestIDETabCloseClick(t *testing.T) {
 
 	// the dirty dot widens the tab, moving its ✕; the zone updates off the
 	// render loop, so wait for the moved bounds rather than clicking the old
-	old := z.StartX
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		m.View()
-		if z = awaitZone(t, m, ide.TabCloseZoneID()); z.StartX != old {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the ✕ zone never followed the dirty mark")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	z = awaitZoneMoved(t, m, ide.TabCloseZoneID(), z.StartX)
 	click = tea.MouseMsg{X: z.StartX, Y: z.StartY,
 		Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease}
 	mm, _ = m.Update(click)
