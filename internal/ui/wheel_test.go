@@ -8,10 +8,10 @@ import (
 	"github.com/charmbracelet/x/vt"
 )
 
-// fakeSession is a claudeSession with a virtual terminal but no process, so
-// the pane plumbing can be exercised without spawning claude.
-func fakeSession(dir string, cols, rows int) *claudeSession {
-	s := &claudeSession{dir: dir, em: vt.NewEmulator(cols, rows), cols: cols, rows: rows}
+// fakeSession is a agentSession with a virtual terminal but no process, so
+// the pane plumbing can be exercised without spawning agent.
+func fakeSession(dir string, cols, rows int) *agentSession {
+	s := &agentSession{dir: dir, em: vt.NewEmulator(cols, rows), cols: cols, rows: rows}
 	s.trackMouseModes()
 	// drain emulator replies (mouse reports, DA responses) the way the real
 	// session pumps them into the pty; unread they block on the pipe
@@ -37,7 +37,7 @@ func wheel(t *testing.T, m Model, id string, up bool) tea.MouseMsg {
 }
 
 // TestWheelScrollsPaneUnderPointer: the wheel works whichever pane the
-// pointer is over. Needing to focus the claude pane first (ctrl+q) before its
+// pointer is over. Needing to focus the agent pane first (ctrl+q) before its
 // scrollback would move made the panel feel dead under the mouse.
 func TestWheelScrollsPaneUnderPointer(t *testing.T) {
 	m := withIssues(newTestModel(t, 160))
@@ -46,19 +46,19 @@ func TestWheelScrollsPaneUnderPointer(t *testing.T) {
 	if !m.selectWorktree(m.wts[1].Path) {
 		t.Fatal("no row for the second worktree")
 	}
-	dir := m.claudeDir()
-	claude, shell := fakeSession(dir, 40, 10), fakeSession(dir, 40, 10)
-	m.terms[dir] = claude
+	dir := m.agentDir()
+	agent, shell := fakeSession(dir, 40, 10), fakeSession(dir, 40, 10)
+	m.terms[dir] = agent
 	m.termTabs[dir] = []*termTab{{kind: "shell", sess: shell}}
 
 	// focus stays on the issues list the whole time
 	if m.pane != paneIssues {
 		t.Fatalf("pane = %d, want paneIssues", m.pane)
 	}
-	mm, _ := m.Update(wheel(t, m, "pane:claude", true))
+	mm, _ := m.Update(wheel(t, m, "pane:agent", true))
 	got := mm.(Model)
-	if claude.scrolled() == 0 {
-		t.Error("wheel over the claude pane did not scroll its scrollback")
+	if agent.scrolled() == 0 {
+		t.Error("wheel over the agent pane did not scroll its scrollback")
 	}
 	if got.pane != paneIssues {
 		t.Errorf("the wheel stole focus: pane = %d", got.pane)
@@ -68,9 +68,9 @@ func TestWheelScrollsPaneUnderPointer(t *testing.T) {
 	}
 
 	// and back down to live
-	mm, _ = got.Update(wheel(t, got, "pane:claude", false))
-	if claude.scrolled() != 0 {
-		t.Errorf("wheel down left the pane %d lines back", claude.scrolled())
+	mm, _ = got.Update(wheel(t, got, "pane:agent", false))
+	if agent.scrolled() != 0 {
+		t.Errorf("wheel down left the pane %d lines back", agent.scrolled())
 	}
 
 	// the shell pane below the git pane scrolls the same way
@@ -98,16 +98,16 @@ func TestWheelFallsBackToFocusedPane(t *testing.T) {
 	if !m.selectWorktree(m.wts[1].Path) {
 		t.Fatal("no row for the second worktree")
 	}
-	dir := m.claudeDir()
-	claude := fakeSession(dir, 40, 10)
-	m.terms[dir] = claude
-	mm, _ := m.focusPane(paneClaude)
+	dir := m.agentDir()
+	agent := fakeSession(dir, 40, 10)
+	m.terms[dir] = agent
+	mm, _ := m.focusPane(paneAgent)
 	m = mm.(Model)
 
 	// a wheel event nowhere near a pane
 	m.Update(tea.MouseMsg{X: 0, Y: 0, Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress})
-	if claude.scrolled() == 0 {
-		t.Error("wheel outside the panels did not reach the focused claude pane")
+	if agent.scrolled() == 0 {
+		t.Error("wheel outside the panels did not reach the focused agent pane")
 	}
 }
 

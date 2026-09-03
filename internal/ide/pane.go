@@ -24,7 +24,7 @@ import (
 	"github.com/markcipolla/treeline/internal/gitx"
 )
 
-// The ide pane sits between claude and git: a file explorer over the selected
+// The ide pane sits between agent and git: a file explorer over the selected
 // worktree beside syntax-highlighted views of the open files (a scaled-down
 // port of croft, github.com/vitali87/croft). Files open into tabs; browsing
 // is read-only, e drops into an editable buffer, ctrl+s writes it back, esc
@@ -492,7 +492,7 @@ func (p *Pane) reloadIDEBuf(b *ideBuf) tea.Cmd {
 	return loadIDEGutterCmd(p.ideFor, b.rel)
 }
 
-// refreshIDEDisk is the pane's answer to files changing under it — claude
+// refreshIDEDisk is the pane's answer to files changing under it — agent
 // and shell commands edit the worktree constantly. The tree re-reads, clean
 // buffers follow the disk, and dirty ones are marked stale rather than
 // silently losing either side.

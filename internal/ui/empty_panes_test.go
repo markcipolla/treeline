@@ -23,7 +23,7 @@ func selectIssue(t *testing.T, m *Model, key string) {
 }
 
 // TestPanesEmptyWithoutWorktree: a card with no worktree must not borrow the
-// repo root — claude, git and the shell have nothing to work in, so they stay
+// repo root — agent, git and the shell have nothing to work in, so they stay
 // empty and unfocusable rather than showing the main checkout's diff.
 func TestPanesEmptyWithoutWorktree(t *testing.T) {
 	m := newTestModel(t, 200)
@@ -35,8 +35,8 @@ func TestPanesEmptyWithoutWorktree(t *testing.T) {
 	m.refreshRows()
 	selectIssue(t, &m, "LAB-9")
 
-	if dir := m.claudeDir(); dir != "" {
-		t.Fatalf("claudeDir = %q, want empty (no worktree for LAB-9)", dir)
+	if dir := m.agentDir(); dir != "" {
+		t.Fatalf("agentDir = %q, want empty (no worktree for LAB-9)", dir)
 	}
 
 	// no git status or log is loaded for the parked-on directory
@@ -47,7 +47,7 @@ func TestPanesEmptyWithoutWorktree(t *testing.T) {
 		t.Errorf("gitFor = %q, want empty", m.gitFor)
 	}
 
-	for _, p := range []int{paneClaude, paneIDE, paneDiff, paneTerm} {
+	for _, p := range []int{paneAgent, paneIDE, paneDiff, paneTerm} {
 		if m.paneEnabled(p) {
 			t.Errorf("pane %d enabled without a worktree", p)
 		}
@@ -58,9 +58,9 @@ func TestPanesEmptyWithoutWorktree(t *testing.T) {
 		t.Errorf("ctrl+q moved focus to pane %d, want paneIssues", got.pane)
 	}
 	// ...and even a direct focus request (a click, say) bounces back
-	mm, _ = m.focusPane(paneClaude)
+	mm, _ = m.focusPane(paneAgent)
 	if got := mm.(Model); got.pane != paneIssues {
-		t.Errorf("focusPane(paneClaude) = %d, want paneIssues", got.pane)
+		t.Errorf("focusPane(paneAgent) = %d, want paneIssues", got.pane)
 	}
 	if m.terms[""] != nil || m.termSession("") != nil {
 		t.Error("started a session with no worktree")
@@ -77,11 +77,11 @@ func TestPanesEmptyWithoutWorktree(t *testing.T) {
 	if !m.selectWorktree(m.root + "/.worktrees/nine") {
 		t.Fatal("no row for the new worktree")
 	}
-	if dir := m.claudeDir(); dir != m.root+"/.worktrees/nine" {
-		t.Errorf("claudeDir = %q, want the worktree path", dir)
+	if dir := m.agentDir(); dir != m.root+"/.worktrees/nine" {
+		t.Errorf("agentDir = %q, want the worktree path", dir)
 	}
-	if !m.paneEnabled(paneClaude) {
-		t.Error("claude pane still disabled with a worktree selected")
+	if !m.paneEnabled(paneAgent) {
+		t.Error("agent pane still disabled with a worktree selected")
 	}
 }
 
@@ -94,10 +94,10 @@ func TestFocusFallsBackWhenWorktreeVanishes(t *testing.T) {
 	if !m.selectWorktree(target) {
 		t.Fatal("no row for the second worktree")
 	}
-	mm, _ := m.focusPane(paneClaude)
+	mm, _ := m.focusPane(paneAgent)
 	m = mm.(Model)
-	if m.pane != paneClaude {
-		t.Fatalf("pane = %d, want paneClaude", m.pane)
+	if m.pane != paneAgent {
+		t.Fatalf("pane = %d, want paneAgent", m.pane)
 	}
 
 	mm, _ = m.Update(worktreesMsg{wts: nil}) // both worktrees removed

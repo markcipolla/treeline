@@ -10,7 +10,7 @@ import (
 )
 
 // waitFor polls until the session's screen contains want.
-func waitFor(t *testing.T, s *claudeSession, want string) {
+func waitFor(t *testing.T, s *agentSession, want string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
@@ -147,7 +147,7 @@ func TestDropSessionsKillsThePersistedWork(t *testing.T) {
 
 	m := Model{
 		cfg:      &config.Config{},
-		terms:    map[string]*claudeSession{},
+		terms:    map[string]*agentSession{},
 		termTabs: map[string][]*termTab{dir: {{kind: "shell", sess: shell}}},
 		termSel:  map[string]int{},
 	}

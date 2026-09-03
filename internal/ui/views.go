@@ -221,7 +221,7 @@ func (m Model) viewMain() string {
 	if m.threePane() {
 		bindings = append([]key.Binding{keyPane}, bindings...)
 		switch m.pane {
-		case paneClaude:
+		case paneAgent:
 			bindings = []key.Binding{keyTermEsc}
 		case paneTerm:
 			bindings = []key.Binding{keyTermTabs, keyTermEsc}
@@ -274,42 +274,42 @@ func (m Model) viewPanels() string {
 	}
 	issues = m.mark("pane:issues", issues)
 
-	dir := m.claudeDir()
+	dir := m.agentDir()
 	noWT := dir == "" // nothing checked out: the work panes stay empty
-	claudeTitle := "claude"
+	agentTitle := "opencode"
 	if !noWT {
-		claudeTitle += " — " + m.paneLabel(dir)
+		agentTitle += " — " + m.paneLabel(dir)
 	}
-	var claudeBody string
+	var agentBody string
 	switch s := m.terms[dir]; {
 	case noWT:
-		claudeBody = dimStyle.Render(m.noWorktreeHint())
+		agentBody = dimStyle.Render(m.noWorktreeHint())
 	case s == nil:
-		claudeBody = dimStyle.Render("press enter on a card (or tab here) to launch claude in its worktree\n\nctrl+q cycles panes from anywhere")
+		agentBody = dimStyle.Render("press enter on a card (or tab here) to launch opencode in its worktree\n\nctrl+q cycles panes from anywhere")
 	case s.exited.Load():
-		claudeTitle += " · exited"
-		claudeBody = s.render(false) // frozen last frame
+		agentTitle += " · exited"
+		agentBody = s.render(false) // frozen last frame
 	default:
-		claudeBody = s.render(m.pane == paneClaude)
+		agentBody = s.render(m.pane == paneAgent)
 		if s.tmuxName != "" {
-			claudeTitle += dimStyle.Render(" · tmux") // survives quitting treeline
+			agentTitle += dimStyle.Render(" · tmux") // survives quitting treeline
 		}
 		if n := s.scrolled(); n > 0 {
-			claudeTitle += fmt.Sprintf(" · ↑%d — wheel down for live", n)
+			agentTitle += fmt.Sprintf(" · ↑%d — wheel down for live", n)
 		}
 	}
-	if m.pane == paneClaude && !noWT {
+	if m.pane == paneAgent && !noWT {
 		if s := m.terms[dir]; s != nil && s.exited.Load() {
-			claudeTitle += " — enter restarts"
+			agentTitle += " — enter restarts"
 		} else {
-			claudeTitle += " · ctrl+q next pane"
+			agentTitle += " · ctrl+q next pane"
 		}
 	}
 	if time.Now().Before(m.copiedUntil) {
-		claudeTitle += okStyle.Render(" · copied ✓")
+		agentTitle += okStyle.Render(" · copied ✓")
 	}
-	claude := m.mark("pane:claude",
-		m.workPart(l.claude, m.pane == paneClaude, claudeTitle, claudeBody))
+	agent := m.mark("pane:agent",
+		m.workPart(l.agent, m.pane == paneAgent, agentTitle, agentBody))
 
 	var ide panePart
 	if noWT && !m.ide.AnyDirty() {
@@ -383,11 +383,11 @@ func (m Model) viewPanels() string {
 
 	switch l.mode {
 	case layFour:
-		return frame(band{{issues}, {claude}, {ide}, {git}, {term}})
+		return frame(band{{issues}, {agent}, {ide}, {git}, {term}})
 	case layCols:
-		return frame(band{{issues}, {claude}, {ide}, {git, term}})
+		return frame(band{{issues}, {agent}, {ide}, {git, term}})
 	}
-	return frame(band{{issues}}, band{{claude}, {ide}, {git, term}})
+	return frame(band{{issues}}, band{{agent}, {ide}, {git, term}})
 }
 
 // idePart is the ide pane as a panePart: workPart's chrome with the
@@ -482,7 +482,7 @@ func (m Model) issuesTitle(w int) string {
 	return full
 }
 
-// noWorktreeHint explains why the claude, git and shell panes are empty: the
+// noWorktreeHint explains why the agent, git and shell panes are empty: the
 // selected row has no worktree for them to work in.
 func (m Model) noWorktreeHint() string {
 	ref := m.selectedRef()
@@ -652,7 +652,7 @@ func (m Model) viewDeleteConfirm() string {
 		// wrapped: the modal is sized to its content, and an unwrapped
 		// sentence this long would run past the edge of the terminal
 		b.WriteString("\n" + errStyle.Width(66).Render("⚠ git refused: the worktree is locked. Forcing pulls "+
-			"the directory out from under whatever holds it — a claude session running "+
+			"the directory out from under whatever holds it — an agent session running "+
 			"there loses the files it is working on.") + "\n")
 	}
 	b.WriteString("\n")

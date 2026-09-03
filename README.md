@@ -30,6 +30,10 @@ or from a checkout: `go build -o treeline . && mv treeline ~/bin/` (anywhere
 on your PATH). Go 1.24+ (the repo pins it via [mise](https://mise.jdx.dev) in
 `mise.toml`).
 
+The agent pane runs [opencode](https://github.com/anomalyco/opencode). The
+Homebrew formula depends on it, so `brew install` brings it along; with
+`go install` or a checkout, install it yourself (`brew install opencode`).
+
 ## Shell integration (recommended)
 
 The TUI can't change your shell's directory itself. Add this to `.zshrc`:
@@ -91,14 +95,14 @@ an issue are grouped at the bottom.
 
 ### Locked worktrees
 
-A worktree can be locked — claude locks the one it is working in, recording
+A worktree can be locked — a coding agent locks the one it is working in, recording
 a reason like `claude session encapsulated-shimmying-sparrow (pid 65825)`.
 Git then refuses to remove it, and needs a second `--force` to be talked out
 of it. The remove modal names the lock before you commit to anything, and if
 git refuses anyway it asks a second time with the buttons relabelled
 `force remove` / `force remove + delete branch`, defaulting to cancel.
-Forcing pulls the directory out from under whatever holds the lock, so a
-claude session still working in there loses its files.
+Forcing pulls the directory out from under whatever holds the lock, so an
+agent session still working in there loses its files.
 
 `treeline rm` does the same from the shell: it prints the lock reason and
 asks, and `--force` answers yes to both that and the uncommitted-changes
@@ -107,7 +111,7 @@ prompt.
 The mouse works too: click buttons and branch-type options; scroll the
 table and detail view with the wheel.
 
-`ctrl+q` cycles the panes: issues, claude, ide, git, shell. The claude and
+`ctrl+q` cycles the panes: issues, opencode, ide, git, shell. The opencode and
 shell panes run in the selected worktree and survive quitting — see
 [Background sessions](#background-sessions).
 
@@ -118,8 +122,8 @@ How the panes are arranged follows the width of the terminal:
 | Width   | Layout                                                                 |
 | ------- | ---------------------------------------------------------------------- |
 | < 110   | the issues table on its own                                            |
-| 110–179 | issues as a strip on top; claude, ide, and the git pane over a shell   |
-| 180–279 | four columns: issues, claude, ide, git over the shell                  |
+| 110–179 | issues as a strip on top; opencode, ide, and the git pane over a shell   |
+| 180–279 | four columns: issues, opencode, ide, git over the shell                  |
 | ≥ 280   | five columns: the shell gets one of its own                            |
 
 The seams between panes drag with the mouse: press on the border between
@@ -143,7 +147,7 @@ neighbour's edge.
 ### The ide pane
 
 A scaled-down port of [croft](https://github.com/vitali87/croft) sitting
-between claude and git: a file explorer over the selected worktree beside
+between opencode and git: a file explorer over the selected worktree beside
 the open files, each in its own tab, syntax-highlighted, with a git gutter
 marking the lines the worktree changed. `enter` unfolds a directory or opens
 a file, `e` drops into an editable buffer, `ctrl+s` writes it back (and
@@ -152,7 +156,7 @@ refreshes the git pane), and `esc` climbs back out — editor → file → tree.
 scrolls whichever half the pointer is over, and a click opens what it lands
 on.
 
-The pane keeps its footing while claude edits the same worktree: the tree
+The pane keeps its footing while opencode edits the same worktree: the tree
 re-reads, clean buffers follow the disk, and dirty ones are marked stale
 rather than losing either side. A save onto a file that changed underneath
 is refused — `r` reloads it, `R` overwrites — and unsaved edits pin the pane
@@ -188,7 +192,7 @@ files.
 | `space` | stage / unstage the file |
 | `enter` | hunk-by-hunk staging |
 | `l` / `b` | commit log / branch diff vs the base |
-| `c` | commit form (`ctrl+g` drafts a message with claude) |
+| `c` | commit form (`ctrl+g` drafts a message with opencode) |
 
 `l` opens the commit log, which is laid out the same way: the commits on top
 and the selected one's message and patch — diffstat first — underneath. The
@@ -199,7 +203,7 @@ its first parent.
 
 Drag with the mouse to select text anywhere in the pane — diff lines, file
 names, log entries — and releasing copies it to the clipboard, the same as
-in the claude and shell panes. A plain click still selects a file, or a
+in the opencode and shell panes. A plain click still selects a file, or a
 commit in the log.
 
 ### Where worktrees live
@@ -234,10 +238,10 @@ edits are unsaved.
 
 ## Background sessions
 
-The claude and shell panes keep running after you quit. Where tmux is
+The opencode and shell panes keep running after you quit. Where tmux is
 installed, treeline starts them on a tmux server of its own — a dedicated
 socket, its own config, no status bar and no prefix key — so quitting only
-detaches: the claude in a worktree keeps its context, a dev server in the
+detaches: the opencode in a worktree keeps its context, a dev server in the
 shell pane keeps serving, and the next launch attaches straight back to
 them. Switching between worktrees inside treeline works the same way, one
 session per worktree per pane. Panes backed this way are marked `· tmux` in
@@ -302,7 +306,7 @@ database); `cleanup` runs before one is removed (drop the database). By
 default `setup` runs in the background; `setup_pane` (the "show setup in a
 pane" checkbox in settings) runs it in a tab of the shell pane instead, so
 a script that starts a dev server has somewhere to keep running — the tab
-scrolls, takes keystrokes, and persists over tmux like the claude and
+scrolls, takes keystrokes, and persists over tmux like the opencode and
 shell panes. The shell pane is tabbed either way: `ctrl+t` opens extra
 shell tabs, `ctrl+←`/`ctrl+→` (or a click) switch between them, and each
 tab is its own tmux session. The config lives at
@@ -310,5 +314,5 @@ tab is its own tmux session. The config lives at
 
 `branch_types` controls the type-picker options; `slug_max_len` caps the
 slug generated from issue titles; `persist_sessions` (default on wherever
-tmux is installed) keeps the claude and shell panes alive between launches —
+tmux is installed) keeps the opencode and shell panes alive between launches —
 see [Background sessions](#background-sessions).

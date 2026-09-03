@@ -26,7 +26,7 @@ func TestScrollbackCapture(t *testing.T) {
 	}
 	em := vt.NewEmulator(40, 10)
 	em.SetScrollbackSize(500)
-	s := &claudeSession{dir: t.TempDir(), cmd: cmd, pty: p, em: em, cols: 40, rows: 10, notify: make(chan struct{}, 1)}
+	s := &agentSession{dir: t.TempDir(), cmd: cmd, pty: p, em: em, cols: 40, rows: 10, notify: make(chan struct{}, 1)}
 	buf := make([]byte, 4096)
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {

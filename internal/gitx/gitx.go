@@ -84,7 +84,7 @@ func List(root string) ([]Worktree, error) {
 		case line == "prunable" || strings.HasPrefix(line, "prunable "):
 			cur.Prunable = true
 		case line == "locked" || strings.HasPrefix(line, "locked "):
-			// claude and other tools lock a worktree while they work in it,
+			// agent and other tools lock a worktree while they work in it,
 			// leaving the reason for the lock here
 			cur.Locked = true
 			cur.LockReason = strings.TrimSpace(strings.TrimPrefix(line, "locked"))
