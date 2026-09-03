@@ -163,6 +163,9 @@ type Model struct {
 	ideCur       int             // the active tab
 	ideEditing   bool            // the textarea has the keys
 	ideEditor    textarea.Model
+	ideSelAnchor int             // line anchoring a shift+↑/↓ selection while editing; -1 none
+	ideMultiLo   int             // first line of a multi-cursor block (ctrl+e on a selection); -1 none
+	ideMultiCols []int           // per-line rune cursor of the block, from ideMultiLo down
 	ideInput     textinput.Model // the ask-line: filter, find, search, new, rename
 	ideInputKind int
 	ideFilter    string          // applied tree filter
@@ -340,6 +343,8 @@ func New(cfg *config.Config, root string) Model {
 		commitSubject: commitSubject,
 		commitBody:    commitBody,
 		ideEditor:     ideEditor,
+		ideSelAnchor:  -1,
+		ideMultiLo:    -1,
 		ideInput:      newInput(""),
 		ideExpanded:   map[string]bool{},
 		ideGrepFold:   map[string]bool{},
