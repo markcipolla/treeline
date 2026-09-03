@@ -276,7 +276,7 @@ func (m Model) viewPanels() string {
 
 	dir := m.claudeDir()
 	noWT := dir == "" // nothing checked out: the work panes stay empty
-	claudeTitle := "claude"
+	claudeTitle := "balance"
 	if !noWT {
 		claudeTitle += " — " + m.paneLabel(dir)
 	}
@@ -285,7 +285,7 @@ func (m Model) viewPanels() string {
 	case noWT:
 		claudeBody = dimStyle.Render(m.noWorktreeHint())
 	case s == nil:
-		claudeBody = dimStyle.Render("press enter on a card (or tab here) to launch claude in its worktree\n\nctrl+q cycles panes from anywhere")
+		claudeBody = dimStyle.Render("press enter on a card (or tab here) to launch balance in its worktree\n\nctrl+q cycles panes from anywhere")
 	case s.exited.Load():
 		claudeTitle += " · exited"
 		claudeBody = s.render(false) // frozen last frame
