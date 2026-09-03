@@ -64,7 +64,7 @@ type selPoint struct{ line, col int }
 // session outlives this treeline run.
 var (
 	startTerm = func(dir string, cols, rows int, persist bool) (*claudeSession, error) {
-		return startProgramSession(dir, cols, rows, persist, "claude", "claude")
+		return startProgramSession(dir, cols, rows, persist, "balance", "balance")
 	}
 	// kind names the tab ("shell", "shell2", …) so every extra shell tab
 	// persists as a tmux session of its own.
