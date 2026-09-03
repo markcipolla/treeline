@@ -900,10 +900,10 @@ func (m Model) ideContentH() int {
 	return h
 }
 
-// ideViewH is the file half's content rows: the bordered tab bar's three rows
-// sit above them.
+// ideViewH is the file half's content rows: the bordered tab bar's rows sit
+// above them.
 func (m Model) ideViewH() int {
-	h := m.ideContentH() - 3
+	h := m.ideContentH() - tabBarH
 	if h < 1 {
 		h = 1
 	}
@@ -1045,17 +1045,9 @@ var (
 
 // ideTabBar is the file half's top rows: one bordered tab per open file, the
 // active one open at the bottom and wearing a clickable ✕, dirty and stale
-// marked on the name. Three rows tall — ideViewH leaves room for it. A strip
-// wider than the half scrolls just enough that the active tab is fully
-// visible, so an obscured tab is reached by selecting it ([ ] or the tree).
+// marked on the name. tabBarH rows tall — ideViewH leaves room for it.
 func (m Model) ideTabBar(w int) []string {
-	activeText := paneTitleStyle
-	activeBorder := subtle
-	if m.pane == paneIDE {
-		activeText = paneTitleFocus
-		activeBorder = accent
-	}
-	parts := make([]string, 0, len(m.ideBufs))
+	items := make([]tabItem, 0, len(m.ideBufs))
 	for i, b := range m.ideBufs {
 		label := m.ideIconCell(b.rel, false, false) + filepath.Base(b.rel)
 		if b.dirty {
@@ -1064,36 +1056,14 @@ func (m Model) ideTabBar(w int) []string {
 		if b.stale {
 			label += " ⚠"
 		}
-		st := lipgloss.NewStyle().Border(ideTabBorder).BorderForeground(subtle).Padding(0, 1)
-		body := dimStyle.Render(label)
-		if i == m.ideCur {
-			st = st.Border(ideTabActiveBorder).BorderForeground(activeBorder)
-			body = activeText.Render(label) + " " +
-				m.zones.Mark(ideTabCloseZoneID(), dimStyle.Render("✕"))
-		}
-		parts = append(parts, m.zones.Mark(ideTabZoneID(i), st.Render(body)))
+		items = append(items, tabItem{
+			zone:      ideTabZoneID(i),
+			label:     label,
+			active:    i == m.ideCur,
+			closeZone: ideTabCloseZoneID(),
+		})
 	}
-	row := lipgloss.JoinHorizontal(lipgloss.Top, parts...)
-	total := lipgloss.Width(row)
-	off := 0
-	if total > w {
-		right := 0
-		for i := 0; i <= m.ideCur && i < len(parts); i++ {
-			right += lipgloss.Width(parts[i])
-		}
-		if right > w {
-			off = right - w
-		}
-	}
-	lines := strings.Split(row, "\n")
-	for i := range lines {
-		lines[i] = ansi.Cut(lines[i], off, off+w)
-	}
-	// the shelf the tabs hang from runs to the editor's right edge
-	if fill := w - (total - off); fill > 0 {
-		lines[len(lines)-1] += dimStyle.Render(strings.Repeat("─", fill))
-	}
-	return lines
+	return m.tabBar(w, m.pane == paneIDE, items)
 }
 
 // ideTreeRows is the explorer: the visible window of the tree, the selected

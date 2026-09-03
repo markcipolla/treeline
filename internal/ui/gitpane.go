@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -31,6 +32,36 @@ const (
 	gitModeBranch
 	gitModeCommit
 )
+
+func gitTabZoneID(name string) string { return "gittab:" + name }
+
+// gitTabs is the pane's tab row: the three standing views, plus a transient
+// tab while hunk staging or the commit form is open — those wear a ✕ that
+// closes them back to files, the way esc does.
+func (m Model) gitTabs() []tabItem {
+	items := []tabItem{
+		{zone: gitTabZoneID("files"), label: "files", active: m.gitMode == gitModeFiles},
+		{zone: gitTabZoneID("log"), label: "log", active: m.gitMode == gitModeLog},
+		{zone: gitTabZoneID("branch"), label: "branch", active: m.gitMode == gitModeBranch},
+	}
+	switch m.gitMode {
+	case gitModeHunks:
+		items = append(items, tabItem{zone: gitTabZoneID("hunks"),
+			label: "hunks — " + filepath.Base(m.hunkPath), active: true,
+			closeZone: gitTabZoneID("x")})
+	case gitModeCommit:
+		items = append(items, tabItem{zone: gitTabZoneID("commit"),
+			label: "commit", active: true, closeZone: gitTabZoneID("x")})
+	}
+	return items
+}
+
+// gitContentSize is the pane's inner area under its tab row — what the mode
+// views and their scroll handlers lay out against.
+func (m Model) gitContentSize() (w, h int) {
+	w, h = m.gitPaneSize()
+	return w, h - tabBarH
+}
 
 func gitZoneID(staged bool, i int) string {
 	side := "u"
@@ -266,7 +297,7 @@ func clampScroll(off, n, rows int) int {
 // scrollGitDiff moves the files-mode preview under the picker, leaving the
 // selected file where it is.
 func (m *Model) scrollGitDiff(delta int) {
-	w, h := m.gitPaneSize()
+	w, h := m.gitContentSize()
 	listH, _ := m.gitFilesLayout(w, h)
 	m.gitDiffScroll = clampScroll(m.gitDiffScroll+delta,
 		len(strings.Split(m.gitDiff, "\n")), h-listH-1)
@@ -276,7 +307,7 @@ func (m *Model) scrollGitDiff(delta int) {
 // row: moving the cursor with the keyboard pulls the view along, while the
 // wheel is free to scroll away from it.
 func (m *Model) revealGitSel() {
-	w, h := m.gitPaneSize()
+	w, h := m.gitContentSize()
 	listH, _ := m.gitFilesLayout(w, h)
 	rows := listH - 1
 	if rows < 1 {
@@ -414,7 +445,7 @@ func (m Model) commitDetail() string {
 // revealCommitSel scrolls the log just far enough to show the selected
 // commit, leaving the wheel free to scroll away from it.
 func (m *Model) revealCommitSel() {
-	_, h := m.gitPaneSize()
+	_, h := m.gitContentSize()
 	rows := m.gitLogLayout(h)
 	if rows < 1 {
 		return
@@ -431,7 +462,7 @@ func (m *Model) revealCommitSel() {
 // scrollCommitDiff moves the message-and-patch block under the log, leaving
 // the selected commit where it is.
 func (m *Model) scrollCommitDiff(delta int) {
-	_, h := m.gitPaneSize()
+	_, h := m.gitContentSize()
 	listH := m.gitLogLayout(h)
 	m.commitDiffScroll = clampScroll(m.commitDiffScroll+delta,
 		len(strings.Split(m.commitDetail(), "\n")), h-listH-1)
@@ -475,6 +506,42 @@ func (m *Model) switchGitCol() tea.Cmd {
 	m.gitDiffScroll = 0
 	m.revealGitSel()
 	return m.loadSelectedFileDiff()
+}
+
+// clickGitTab handles a click on the git pane's tab row: the tab under the
+// pointer opens its view, the ✕ closes a transient tab back to files. It
+// reports whether the click was a tab's.
+func (m Model) clickGitTab(msg tea.MouseMsg) (tea.Model, tea.Cmd, bool) {
+	var cmd tea.Cmd
+	switch {
+	case m.clicked(msg, gitTabZoneID("x")):
+		if m.gitMode == gitModeCommit {
+			m.closeCommitForm()
+		} else {
+			m.gitMode = gitModeFiles
+		}
+	case m.clicked(msg, gitTabZoneID("files")):
+		if m.gitMode == gitModeCommit {
+			m.closeCommitForm()
+		}
+		m.gitMode = gitModeFiles
+	case m.clicked(msg, gitTabZoneID("log")):
+		if m.gitMode != gitModeLog {
+			if m.gitMode == gitModeCommit {
+				m.closeCommitForm()
+			}
+			cmd = m.openGitLog()
+		}
+	case m.clicked(msg, gitTabZoneID("branch")):
+		if m.gitMode == gitModeCommit {
+			m.closeCommitForm()
+		}
+		m.gitMode = gitModeBranch
+	default:
+		return m, nil, false
+	}
+	mm, fcmd := m.focusPane(paneDiff)
+	return mm, tea.Batch(cmd, fcmd), true
 }
 
 // clickGitFile selects a clicked row, focusing the git pane.
@@ -775,8 +842,18 @@ func (m Model) fileColumn(col, w, h int) []string {
 }
 
 // gitPaneContent renders the right panel's title and body for the current
-// mode, fitted to the pane's inner width and height.
+// mode, fitted to the pane's inner width and height: the tab row on top, the
+// mode's view in the rows under it.
 func (m Model) gitPaneContent(w, h int) (string, string) {
+	title, body := m.gitModeContent(w, h-tabBarH)
+	rows := append(m.tabBar(w, m.pane == paneDiff, m.gitTabs()),
+		strings.Split(body, "\n")...)
+	return title, strings.Join(rows, "\n")
+}
+
+// gitModeContent renders the current mode's view into a w×h area below the
+// tab row.
+func (m Model) gitModeContent(w, h int) (string, string) {
 	switch m.gitMode {
 	case gitModeHunks:
 		verb := "stages"
@@ -792,7 +869,7 @@ func (m Model) gitPaneContent(w, h int) (string, string) {
 		return title, clipLines(b.String(), w, h)
 
 	case gitModeLog:
-		title := "git — log · ↑↓ commit · J/K scroll diff · b branch diff"
+		title := "git · ↑↓ commit · J/K scroll diff"
 		if len(m.commits) == 0 {
 			return title, dimStyle.Render("no commits yet")
 		}
@@ -850,7 +927,7 @@ func (m Model) gitPaneContent(w, h int) (string, string) {
 	}
 
 	// files mode: unstaged | staged side by side, preview below
-	title := "git — files · space stage · enter hunks · o edit · l log · b diff"
+	title := "git · space stage · enter hunks · o edit · c commit"
 	if len(m.gitUnstaged) == 0 && len(m.gitStaged) == 0 {
 		return title, dimStyle.Render("working tree clean")
 	}
