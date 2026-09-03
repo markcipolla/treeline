@@ -207,8 +207,10 @@ type Model struct {
 	hunks         []string
 	hunkSel       int
 	commits       []gitx.Commit
+	logRows       []gitx.LogRow // graph display rows; commits plus rails and the divider
+	logBaseRef    string        // ref the branch-start divider marks
 	commitSel     int
-	commitScroll  int    // log list view offset, scrolled by the wheel
+	commitScroll  int    // log list view offset in display rows, scrolled by the wheel
 	commitDiff    string // colored patch of the selected commit
 	// commitDiffFor is the revision commitDiff was loaded for: while it
 	// lags the selection the pane shows a spinner instead of a stale patch
@@ -624,6 +626,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.err == nil {
 			m.commits = msg.commits
+			m.logRows = msg.rows
+			m.logBaseRef = msg.baseRef
 			if m.commitSel >= len(m.commits) {
 				m.commitSel = 0
 			}
@@ -2470,6 +2474,7 @@ func (m *Model) syncPanes() tea.Cmd {
 		m.gitUnstaged, m.gitStaged, m.gitDiff = nil, nil, ""
 		m.gitCol, m.gitSelU, m.gitSelS = 0, 0, 0
 		m.hunks, m.commits, m.commitSel = nil, nil, 0
+		m.logRows, m.logBaseRef = nil, ""
 		m.commitScroll, m.commitDiffScroll = 0, 0
 		m.commitDiff, m.commitDiffFor = "", ""
 		if dir != "" {
@@ -2986,7 +2991,7 @@ func (m *Model) scrollGitLogRegion(msg tea.MouseMsg, up bool) {
 		if up {
 			delta = -1
 		}
-		m.commitScroll = clampScroll(m.commitScroll+delta, len(m.commits), listH)
+		m.commitScroll = clampScroll(m.commitScroll+delta, len(m.logRows), listH)
 		return
 	}
 	if up {
