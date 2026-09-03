@@ -56,8 +56,8 @@ func TestHunkStagingRoundtrip(t *testing.T) {
 		t.Fatalf("want unstaged-only M, got %+v", st)
 	}
 
-	commits, err := Log(dir, 10)
-	if err != nil || len(commits) != 1 || commits[0].Subject != "init" {
-		t.Fatalf("Log: %+v err %v", commits, err)
+	g, err := Log(dir, 10)
+	if err != nil || len(g.Commits) != 1 || g.Commits[0].Subject != "init" {
+		t.Fatalf("Log: %+v err %v", g, err)
 	}
 }
