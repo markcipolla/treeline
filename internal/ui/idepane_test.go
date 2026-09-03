@@ -60,7 +60,7 @@ func keyIDE(t *testing.T, m Model, k tea.KeyMsg) Model {
 	return mm.(Model)
 }
 
-// TestIDEPaneRenders: the pane shows up between claude and git on the title
+// TestIDEPaneRenders: the pane shows up between balance and git on the title
 // row of every panel layout.
 func TestIDEPaneRenders(t *testing.T) {
 	for _, width := range []int{160, 200, 300} {
@@ -68,20 +68,20 @@ func TestIDEPaneRenders(t *testing.T) {
 		var titleRow string
 		for _, line := range strings.Split(m.View(), "\n") {
 			plain := ansiRE.ReplaceAllString(line, "")
-			if strings.Contains(plain, "claude") && strings.Contains(plain, "git") {
+			if strings.Contains(plain, "balance") && strings.Contains(plain, "git") {
 				titleRow = plain
 				break
 			}
 		}
 		if titleRow == "" {
-			t.Fatalf("%d cols: no title row carries claude and git", width)
+			t.Fatalf("%d cols: no title row carries balance and git", width)
 		}
-		c, i, g := strings.Index(titleRow, "claude"), strings.Index(titleRow, " ide"), strings.Index(titleRow, "git")
+		c, i, g := strings.Index(titleRow, "balance"), strings.Index(titleRow, " ide"), strings.Index(titleRow, "git")
 		if i < 0 {
 			t.Fatalf("%d cols: ide pane missing from %q", width, titleRow)
 		}
 		if !(c < i && i < g) {
-			t.Errorf("%d cols: ide is not between claude and git: %q", width, titleRow)
+			t.Errorf("%d cols: ide is not between balance and git: %q", width, titleRow)
 		}
 	}
 }
@@ -186,7 +186,7 @@ func TestSeamDragResizesPanes(t *testing.T) {
 
 	after := m.layout()
 	if after.claude.w != before.claude.w+8 || after.ide.w != before.ide.w-8 {
-		t.Errorf("dragged +8: claude %d→%d, ide %d→%d",
+		t.Errorf("dragged +8: balance %d→%d, ide %d→%d",
 			before.claude.w, after.claude.w, before.ide.w, after.ide.w)
 	}
 	if got, want := after.issues.w+after.claude.w+after.ide.w+after.git.w,
@@ -203,7 +203,7 @@ func TestSeamDragResizesPanes(t *testing.T) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("claude zone never caught up with the drag")
+			t.Fatal("balance zone never caught up with the drag")
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -215,13 +215,13 @@ func TestSeamDragResizesPanes(t *testing.T) {
 	mm, _ = m.Update(tea.MouseMsg{X: 0, Y: y, Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion})
 	m = mm.(Model)
 	if got := m.layout().claude.w; got != minDragCol {
-		t.Errorf("claude pane dragged past the floor: %d, want %d", got, minDragCol)
+		t.Errorf("balance pane dragged past the floor: %d, want %d", got, minDragCol)
 	}
 	// ...and dragging straight back answers without unwinding a phantom debt
 	mm, _ = m.Update(tea.MouseMsg{X: 6, Y: y, Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion})
 	m = mm.(Model)
 	if got := m.layout().claude.w; got != minDragCol+6 {
-		t.Errorf("claude pane should follow the pointer back: %d, want %d", got, minDragCol+6)
+		t.Errorf("balance pane should follow the pointer back: %d, want %d", got, minDragCol+6)
 	}
 }
 

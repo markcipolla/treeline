@@ -35,9 +35,9 @@ func TestColumnLayoutsSitSideBySide(t *testing.T) {
 		sameRowAs   []string
 		belowClaude string
 	}{
-		{160, []string{"claude", "ide", "git"}, ""}, // stacked: issues on top
-		{200, []string{"issues", "claude", "ide", "git"}, "shell"},
-		{300, []string{"issues", "claude", "ide", "git", "shell"}, ""},
+		{160, []string{"balance", "ide", "git"}, ""}, // stacked: issues on top
+		{200, []string{"issues", "balance", "ide", "git"}, "shell"},
+		{300, []string{"issues", "balance", "ide", "git", "shell"}, ""},
 	} {
 		m := withIssues(newTestModel(t, tc.width))
 		m.height = 44
@@ -117,7 +117,7 @@ func TestColumnLayoutPanesShareAHeight(t *testing.T) {
 			right = l.git.h // its own column, full height
 		}
 		if right != l.claude.h {
-			t.Errorf("%d cols: claude is %d lines, the git column %d", width, l.claude.h, right)
+			t.Errorf("%d cols: balance is %d lines, the git column %d", width, l.claude.h, right)
 		}
 	}
 }
