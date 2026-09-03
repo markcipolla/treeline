@@ -897,19 +897,20 @@ func (m *Model) resize() {
 		for _, tabs := range m.termTabs {
 			for _, t := range tabs {
 				if t.sess != nil {
-					t.sess.resize(l.term.w-3, l.term.h-4)
+					// the tab row sits above the terminal grid
+					t.sess.resize(l.term.w-3, l.term.h-4-tabBarH)
 				}
 			}
 		}
 		m.diffVP.Width = l.git.w - 2
-		m.diffVP.Height = l.git.h - 4
+		m.diffVP.Height = l.git.h - 4 - tabBarH
 		// the ide editor is drawn by the pane itself and never resizes; the
 		// pane's content box and its ask-line follow the pane's width
 		m.ide.SetSize(l.ide.w-4, l.ide.h-4)
 		m.ide.SetInputWidth(l.ide.w - 8)
 		m.commitSubject.Width = l.git.w - 10
 		m.commitBody.SetWidth(l.git.w - 6)
-		bh := l.git.h - 13
+		bh := l.git.h - 13 - tabBarH
 		if bh < 3 {
 			bh = 3
 		}
@@ -2058,10 +2059,10 @@ func (m Model) gitPaneSize() (w, h int) {
 	return b.w - 4, b.h - 4
 }
 
-// shellSize is the shell pane's inner grid.
+// shellSize is the shell pane's inner grid, under its tab row.
 func (m Model) shellSize() (cols, rows int) {
 	b := m.layout().term
-	return b.w - 3, b.h - 4
+	return b.w - 3, b.h - 4 - tabBarH
 }
 
 // termTab is one tab of the shell pane: the shell itself, the repo's setup
@@ -2703,9 +2704,10 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			if done, cmd := m.selectGitText(msg); done {
 				return m, cmd
 			}
-			s, z := m.terms[m.claudeDir()], m.zones.Get("pane:claude")
+			s, z, top := m.terms[m.claudeDir()], m.zones.Get("pane:claude"), 2
 			if sh, zt := m.termSession(m.claudeDir()), m.zones.Get("pane:term"); sh != nil && (sh.selecting() || (zt != nil && !zt.IsZero() && zt.InBounds(msg))) {
 				s, z = sh, zt
+				top = 2 + tabBarH // the shell's tab row sits above its grid
 			}
 			if s != nil {
 				inPane := z != nil && !z.IsZero() && z.InBounds(msg)
@@ -2713,14 +2715,14 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				case tea.MouseActionPress:
 					if msg.Button == tea.MouseButtonLeft && inPane {
 						x, y := z.Pos(msg)
-						s.selPress(x-1, y-2) // the zone starts inside: body pad, title+rule
+						s.selPress(x-1, y-top) // the zone starts inside: body pad, title+rule
 						return m, nil
 					}
 					s.clearSel()
 				case tea.MouseActionMotion:
 					if s.selecting() && z != nil && !z.IsZero() {
 						x, y := z.Pos(msg)
-						s.selDrag(x-1, y-2)
+						s.selDrag(x-1, y-top)
 						return m, nil
 					}
 				case tea.MouseActionRelease:
@@ -2868,14 +2870,19 @@ func paneZoneID(pane int) string {
 
 // paneBodyPos converts a mouse event into a cell of a terminal pane's body:
 // the zone covers the pane's inside, so the title and its rule sit above the
-// body and a column of padding to its left.
+// body and a column of padding to its left. The shell's grid sits under its
+// tab row as well.
 func (m Model) paneBodyPos(pane int, msg tea.MouseMsg) (x, y int, ok bool) {
 	z := m.zones.Get(paneZoneID(pane))
 	if z == nil || z.IsZero() {
 		return 0, 0, false
 	}
 	cx, cy := z.Pos(msg)
-	return cx - 1, cy - 2, true
+	top := 2
+	if pane == paneTerm {
+		top += tabBarH
+	}
+	return cx - 1, cy - top, true
 }
 
 // gitBodyPos converts a mouse event into a position in the git pane's body:
@@ -2896,11 +2903,13 @@ const (
 	gitRegionDiff
 )
 
-// gitRegionAt tells which region the pointer is over in files mode.
+// gitRegionAt tells which region the pointer is over in files mode. The tab
+// row sits above the file lists, so the body line is measured under it.
 func (m Model) gitRegionAt(msg tea.MouseMsg) int {
-	w, h := m.gitPaneSize()
+	w, h := m.gitContentSize()
 	listH, lw := m.gitFilesLayout(w, h)
 	col, line := m.gitBodyPos(msg)
+	line -= tabBarH
 	if line >= listH || line < 0 {
 		return gitRegionDiff
 	}
@@ -2913,7 +2922,7 @@ func (m Model) gitRegionAt(msg tea.MouseMsg) int {
 // scrollGitRegion moves the view under the pointer: one row for the file
 // lists, which are short, and three lines for the diff below them.
 func (m *Model) scrollGitRegion(msg tea.MouseMsg, up bool) {
-	w, h := m.gitPaneSize()
+	w, h := m.gitContentSize()
 	listH, _ := m.gitFilesLayout(w, h)
 	switch r := m.gitRegionAt(msg); r {
 	case gitRegionUnstaged, gitRegionStaged:
@@ -2936,9 +2945,9 @@ func (m *Model) scrollGitRegion(msg tea.MouseMsg, up bool) {
 // scrollGitLogRegion moves the view under the pointer in log mode: the
 // commit list a row at a time, the patch below it three lines.
 func (m *Model) scrollGitLogRegion(msg tea.MouseMsg, up bool) {
-	_, h := m.gitPaneSize()
+	_, h := m.gitContentSize()
 	listH := m.gitLogLayout(h)
-	if _, line := m.gitBodyPos(msg); line >= 0 && line < listH {
+	if _, line := m.gitBodyPos(msg); line-tabBarH >= 0 && line-tabBarH < listH {
 		delta := 1
 		if up {
 			delta = -1
@@ -3000,7 +3009,8 @@ func (m *Model) selectGitText(msg tea.MouseMsg) (bool, tea.Cmd) {
 }
 
 // clickTermTab handles a click on the shell pane's tab row: it switches to
-// the tab under the pointer, or opens a new shell on the +.
+// the tab under the pointer, opens a new shell on the +, or closes an extra
+// shell on its ✕ — running or not, the way a terminal tab closes.
 func (m *Model) clickTermTab(msg tea.MouseMsg) (tea.Cmd, bool) {
 	dir := m.claudeDir()
 	if dir == "" {
@@ -3008,6 +3018,12 @@ func (m *Model) clickTermTab(msg tea.MouseMsg) (tea.Cmd, bool) {
 	}
 	if m.clicked(msg, "termtab:new") {
 		return m.addTermTab(dir), true
+	}
+	if m.clicked(msg, "termtab:x") {
+		if t := m.activeTermTab(dir); t != nil && t.kind != "shell" && t.kind != "setup" {
+			m.closeTermTab(dir, t)
+			return m.ensureTermTab(), true
+		}
 	}
 	for i := range m.termTabsFor(dir) {
 		if m.clicked(msg, termTabZoneID(i)) {
@@ -3108,6 +3124,11 @@ func (m Model) handleClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		if m.threePane() && m.clicked(msg, "pane:ide") {
 			return m.clickIDE(msg)
 		}
+		if m.threePane() {
+			if mm, cmd, ok := m.clickGitTab(msg); ok {
+				return mm, cmd
+			}
+		}
 		switch {
 		case m.clicked(msg, "pane:claude"):
 			// a click on a URL inside the terminal opens it
@@ -3131,7 +3152,7 @@ func (m Model) handleClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			if s := m.termSession(m.claudeDir()); s != nil {
 				z := m.zones.Get("pane:term")
 				x, y := z.Pos(msg)
-				if url := s.urlAt(x-1, y-2); url != "" {
+				if url := s.urlAt(x-1, y-2-tabBarH); url != "" {
 					_ = openBrowser(url)
 					return m, nil
 				}
