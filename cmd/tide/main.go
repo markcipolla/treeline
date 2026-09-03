@@ -73,7 +73,7 @@ func fatal(msg string) {
 }
 
 // tickMsg re-reads the worktree from disk every couple of seconds, the way
-// treeline does when claude edits under the pane — here anything might.
+// treeline does when agent edits under the pane — here anything might.
 type tickMsg time.Time
 
 func tick() tea.Cmd {

@@ -69,7 +69,7 @@ var confFile = sync.OnceValue(func() string {
 	return p
 })
 
-// Name is the session name for a kind of session ("claude", "shell") in a
+// Name is the session name for a kind of session ("opencode", "shell") in a
 // directory: readable enough to recognise in `treeline sessions`, with a
 // digest of the path appended so same-named worktrees in different repos
 // never collide.
@@ -211,7 +211,8 @@ func KillDir(dir string) {
 		}
 		return
 	}
-	for _, kind := range []string{"claude", "shell", "setup"} {
+	// "claude" lingers for sessions persisted before the pane moved to opencode.
+	for _, kind := range []string{"opencode", "claude", "shell", "setup"} {
 		_ = Kill(Name(kind, dir))
 	}
 }

@@ -21,12 +21,13 @@ import (
 	"github.com/markcipolla/treeline/internal/tmux"
 )
 
-// claudeTermMsg signals fresh output from an embedded terminal session.
-type claudeTermMsg struct{ s *claudeSession }
+// agentTermMsg signals fresh output from an embedded terminal session.
+type agentTermMsg struct{ s *agentSession }
 
-// claudeSession is an interactive `claude` running in a pty, mirrored into
-// the claude pane through a virtual terminal with scrollback.
-type claudeSession struct {
+// agentSession is an interactive `opencode` running in a pty, mirrored into
+// the agent pane through a virtual terminal with scrollback. (The type keeps
+// its historical name; it hosts shells and setup scripts too.)
+type agentSession struct {
 	dir string
 	// tmuxName is the session on treeline's tmux server backing this pane,
 	// empty when the program runs in the pty directly. When set, closing the
@@ -63,12 +64,12 @@ type selPoint struct{ line, col int }
 // persist asks for the program to run inside treeline's tmux server, so the
 // session outlives this treeline run.
 var (
-	startTerm = func(dir string, cols, rows int, persist bool) (*claudeSession, error) {
-		return startProgramSession(dir, cols, rows, persist, "claude", "claude")
+	startTerm = func(dir string, cols, rows int, persist bool) (*agentSession, error) {
+		return startProgramSession(dir, cols, rows, persist, "opencode", "opencode")
 	}
 	// kind names the tab ("shell", "shell2", …) so every extra shell tab
 	// persists as a tmux session of its own.
-	startShell = func(dir string, cols, rows int, persist bool, kind string) (*claudeSession, error) {
+	startShell = func(dir string, cols, rows int, persist bool, kind string) (*agentSession, error) {
 		sh := os.Getenv("SHELL")
 		if sh == "" {
 			sh = "/bin/zsh"
@@ -79,13 +80,13 @@ var (
 	// when it starts a server, where that server can keep running. Going
 	// through env(1) carries the TREELINE_* variables into the script on
 	// both the direct-pty and the tmux path.
-	startSetup = func(dir string, cols, rows int, persist bool, script string, env []string) (*claudeSession, error) {
+	startSetup = func(dir string, cols, rows int, persist bool, script string, env []string) (*agentSession, error) {
 		args := append(append([]string{}, env...), "sh", "-c", script)
 		return startProgramSession(dir, cols, rows, persist, "setup", "env", args...)
 	}
 )
 
-func startProgramSession(dir string, cols, rows int, persist bool, kind, name string, args ...string) (*claudeSession, error) {
+func startProgramSession(dir string, cols, rows int, persist bool, kind, name string, args ...string) (*agentSession, error) {
 	if cols < 20 {
 		cols = 20
 	}
@@ -115,7 +116,7 @@ func startProgramSession(dir string, cols, rows int, persist bool, kind, name st
 	}
 	em := vt.NewEmulator(cols, rows)
 	em.SetScrollbackSize(5000)
-	s := &claudeSession{
+	s := &agentSession{
 		dir:      dir,
 		tmuxName: tmuxName,
 		cmd:      cmd,
@@ -152,22 +153,22 @@ func startProgramSession(dir string, cols, rows int, persist bool, kind, name st
 	return s, nil
 }
 
-func (s *claudeSession) ping() {
+func (s *agentSession) ping() {
 	select {
 	case s.notify <- struct{}{}:
 	default:
 	}
 }
 
-// waitClaudeTerm re-arms after every claudeTermMsg so output keeps flowing.
-func waitClaudeTerm(s *claudeSession) tea.Cmd {
+// waitAgentTerm re-arms after every agentTermMsg so output keeps flowing.
+func waitAgentTerm(s *agentSession) tea.Cmd {
 	return func() tea.Msg {
 		<-s.notify
-		return claudeTermMsg{s: s}
+		return agentTermMsg{s: s}
 	}
 }
 
-func (s *claudeSession) resize(cols, rows int) {
+func (s *agentSession) resize(cols, rows int) {
 	if cols < 20 || rows < 5 {
 		return
 	}
@@ -184,11 +185,11 @@ func (s *claudeSession) resize(cols, rows int) {
 }
 
 // close drops the pane. For a tmux-backed session the process being killed is
-// only this pane's tmux client, never the server: the claude or shell inside
+// only this pane's tmux client, never the server: the agent or shell inside
 // keeps running, detached, and the next launch attaches straight back to it.
 // (Killing our own client rather than asking tmux to detach-client keeps a
 // second treeline attached to the same worktree undisturbed.)
-func (s *claudeSession) close() {
+func (s *agentSession) close() {
 	if s.cmd != nil && s.cmd.Process != nil {
 		_ = s.cmd.Process.Kill()
 	}
@@ -200,7 +201,7 @@ func (s *claudeSession) close() {
 
 // scrollBy moves the view into history (positive = older) and returns the
 // resulting offset.
-func (s *claudeSession) scrollBy(delta int) int {
+func (s *agentSession) scrollBy(delta int) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.scroll += delta
@@ -234,7 +235,7 @@ func mouseModeBit(mode ansi.Mode) int32 {
 // trackMouseModes keeps mouseModes mirroring the mouse-reporting modes the
 // program in the pane has switched on, so sendWheel can tell whether a mouse
 // event has anywhere to go.
-func (s *claudeSession) trackMouseModes() {
+func (s *agentSession) trackMouseModes() {
 	s.em.SetCallbacks(vt.Callbacks{
 		EnableMode: func(mode ansi.Mode) {
 			if b := mouseModeBit(mode); b != 0 {
@@ -257,7 +258,7 @@ func (s *claudeSession) trackMouseModes() {
 // full-screen program that never asked (less, a plain vim) gets nothing
 // forwarded, and declining lets the caller fall back to our scrollback
 // rather than eating the event.
-func (s *claudeSession) sendWheel(up bool, x, y int) bool {
+func (s *agentSession) sendWheel(up bool, x, y int) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.em.IsAltScreen() || s.mouseModes.Load() == 0 {
@@ -271,20 +272,20 @@ func (s *claudeSession) sendWheel(up bool, x, y int) bool {
 	return true
 }
 
-func (s *claudeSession) scrollLive() {
+func (s *agentSession) scrollLive() {
 	s.mu.Lock()
 	s.scroll = 0
 	s.mu.Unlock()
 }
 
-func (s *claudeSession) scrolled() int {
+func (s *agentSession) scrolled() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.scroll
 }
 
 // absAt converts pane-relative cell coords into an absolute selection point.
-func (s *claudeSession) absAt(x, y int) selPoint {
+func (s *agentSession) absAt(x, y int) selPoint {
 	if x < 0 {
 		x = 0
 	}
@@ -305,7 +306,7 @@ func (s *claudeSession) absAt(x, y int) selPoint {
 	return selPoint{line: sbLen - k + y, col: x}
 }
 
-func (s *claudeSession) selPress(x, y int) {
+func (s *agentSession) selPress(x, y int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.selA = s.absAt(x, y)
@@ -313,7 +314,7 @@ func (s *claudeSession) selPress(x, y int) {
 	s.selOn, s.selMoved, s.selShown = true, false, true
 }
 
-func (s *claudeSession) selDrag(x, y int) {
+func (s *agentSession) selDrag(x, y int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.selOn {
@@ -328,7 +329,7 @@ func (s *claudeSession) selDrag(x, y int) {
 
 // selRelease finishes a drag: it returns the selected text (empty for a
 // plain click) and whether the pointer actually moved.
-func (s *claudeSession) selRelease() (string, bool) {
+func (s *agentSession) selRelease() (string, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.selOn = false
@@ -339,20 +340,20 @@ func (s *claudeSession) selRelease() (string, bool) {
 	return s.selectedTextLocked(), true
 }
 
-func (s *claudeSession) selecting() bool {
+func (s *agentSession) selecting() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.selOn
 }
 
-func (s *claudeSession) clearSel() {
+func (s *agentSession) clearSel() {
 	s.mu.Lock()
 	s.selOn, s.selMoved, s.selShown = false, false, false
 	s.mu.Unlock()
 }
 
 // selBoundsLocked returns the normalized selection, if one is visible.
-func (s *claudeSession) selBoundsLocked() (a, b selPoint, ok bool) {
+func (s *agentSession) selBoundsLocked() (a, b selPoint, ok bool) {
 	if !s.selShown {
 		return a, b, false
 	}
@@ -364,7 +365,7 @@ func (s *claudeSession) selBoundsLocked() (a, b selPoint, ok bool) {
 }
 
 // cellAtAbsLocked reads a cell from scrollback or the live screen.
-func (s *claudeSession) cellAtAbsLocked(x, abs int) *uv.Cell {
+func (s *agentSession) cellAtAbsLocked(x, abs int) *uv.Cell {
 	sbLen := s.em.ScrollbackLen()
 	if abs < sbLen {
 		return s.em.ScrollbackCellAt(x, abs)
@@ -373,7 +374,7 @@ func (s *claudeSession) cellAtAbsLocked(x, abs int) *uv.Cell {
 }
 
 // lineTextAbsLocked is the column-aligned plain text of an absolute line.
-func (s *claudeSession) lineTextAbsLocked(abs int) string {
+func (s *agentSession) lineTextAbsLocked(abs int) string {
 	var b strings.Builder
 	for x := 0; x < s.cols; {
 		c := s.cellAtAbsLocked(x, abs)
@@ -393,7 +394,7 @@ func (s *claudeSession) lineTextAbsLocked(abs int) string {
 	return b.String()
 }
 
-func (s *claudeSession) selectedTextLocked() string {
+func (s *agentSession) selectedTextLocked() string {
 	a, b, ok := s.selBoundsLocked()
 	if !ok {
 		return ""
@@ -435,7 +436,7 @@ func copyToClipboard(text string) error {
 
 // render draws the terminal: the live screen, or a window sliding into the
 // scrollback when scrolled up.
-func (s *claudeSession) render(focused bool) string {
+func (s *agentSession) render(focused bool) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -497,7 +498,7 @@ func (s *claudeSession) render(focused bool) string {
 
 // renderCellsLine rebuilds one absolute line from cells, reversing the
 // cursor cell (curX ≥ 0) and/or the selected column span selFrom..selTo.
-func (s *claudeSession) renderCellsLine(abs, curX, selFrom, selTo int) string {
+func (s *agentSession) renderCellsLine(abs, curX, selFrom, selTo int) string {
 	var b strings.Builder
 	for x := 0; x < s.cols; {
 		c := s.cellAtAbsLocked(x, abs)
@@ -526,7 +527,7 @@ var urlRE = regexp.MustCompile(`https?://[^\s"'<>]+`)
 
 // lineAt returns the plain text of the visual row currently shown at y,
 // column-aligned (wide cells are padded) so x positions match the display.
-func (s *claudeSession) lineAt(y int) string {
+func (s *agentSession) lineAt(y int) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.scroll > 0 {
@@ -567,7 +568,7 @@ func (s *claudeSession) lineAt(y int) string {
 }
 
 // urlAt finds a URL under column x of the given visual row.
-func (s *claudeSession) urlAt(x, y int) string {
+func (s *agentSession) urlAt(x, y int) string {
 	line := s.lineAt(y)
 	if line == "" {
 		return ""
@@ -583,7 +584,7 @@ func (s *claudeSession) urlAt(x, y int) string {
 }
 
 // renderLineWithCursor rebuilds one screen row with a block cursor.
-func (s *claudeSession) renderLineWithCursor(y, curX int) string {
+func (s *agentSession) renderLineWithCursor(y, curX int) string {
 	return s.renderCellsLine(s.em.ScrollbackLen()+y, curX, -1, -1)
 }
 

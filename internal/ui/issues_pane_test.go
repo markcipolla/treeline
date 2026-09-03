@@ -50,7 +50,7 @@ func TestIssuesPaneMergedWithTable(t *testing.T) {
 	if bottom < 0 {
 		t.Fatal("the pane's bottom border does not close the grid's columns")
 	}
-	// nothing between the two draws a second frame (the claude|git seam below
+	// nothing between the two draws a second frame (the agent|git seam below
 	// the pane is a real doubled border, so only the pane's own lines count)
 	for i := rule; i <= bottom; i++ {
 		if strings.Contains(lines[i], "││") {
@@ -119,7 +119,7 @@ func TestGridChromeFollowsFocus(t *testing.T) {
 		want string
 	}{
 		{paneIssues, ansiRE.FindString(paneTitleFocus.Render("KEY"))},
-		{paneClaude, ansiRE.FindString(paneTitleStyle.Render("KEY"))},
+		{paneAgent, ansiRE.FindString(paneTitleStyle.Render("KEY"))},
 	} {
 		mm, _ := m.focusPane(tc.pane)
 		if mm.(Model).pane != tc.pane {

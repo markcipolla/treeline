@@ -118,7 +118,7 @@ type genCommitMsg struct {
 	err     error
 }
 
-// generateCommitMsgCmd asks the claude CLI to draft a commit message from
+// generateCommitMsgCmd asks the opencode CLI to draft a commit message from
 // the staged diff.
 func generateCommitMsgCmd(dir string) tea.Cmd {
 	return func() tea.Msg {
@@ -138,15 +138,15 @@ func generateCommitMsgCmd(dir string) tea.Cmd {
 			"Output only the commit message — no markdown, no code fences, no commentary.\n\n" + diff
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, "claude", "-p", prompt)
+		cmd := exec.CommandContext(ctx, "opencode", "run", prompt)
 		cmd.Dir = dir
 		out, err := cmd.Output()
 		if err != nil {
-			return genCommitMsg{dir: dir, err: fmt.Errorf("claude: %v", err)}
+			return genCommitMsg{dir: dir, err: fmt.Errorf("opencode: %v", err)}
 		}
 		subject, body := splitCommitMessage(string(out))
 		if subject == "" {
-			return genCommitMsg{dir: dir, err: errors.New("claude returned an empty message")}
+			return genCommitMsg{dir: dir, err: errors.New("opencode returned an empty message")}
 		}
 		return genCommitMsg{dir: dir, subject: subject, body: body}
 	}
