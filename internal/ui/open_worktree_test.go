@@ -192,3 +192,24 @@ func awaitZone(t *testing.T, m Model, id string) *zone.ZoneInfo {
 		time.Sleep(5 * time.Millisecond)
 	}
 }
+
+// awaitZoneMoved waits until a zone's bounds have left a stale column. Right
+// after a layout change awaitZone can answer with where the previous frame put
+// the zone — clicking there would miss — so a test that moved a zone waits for
+// the zone manager to catch up with the move.
+func awaitZoneMoved(t *testing.T, m Model, id string, staleX int) *zone.ZoneInfo {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if v := m.View(); v == "" {
+			t.Fatal("empty view")
+		}
+		if z := m.zones.Get(id); z != nil && !z.IsZero() && z.StartX != staleX {
+			return z
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s never moved off column %d", id, staleX)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
