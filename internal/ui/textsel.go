@@ -10,7 +10,7 @@ import (
 
 // textSel is a mouse text selection over a block of already-rendered lines —
 // the git pane's diff and file lists, which are strings rather than terminal
-// cells, so they can't use claudeSession's cell-level selection. Coordinates
+// cells, so they can't use agentSession's cell-level selection. Coordinates
 // are body-relative: line, then visible column.
 type textSel struct {
 	on    bool // drag in progress

@@ -16,10 +16,10 @@ import (
 // worktrees already listed.
 func newTestModel(t *testing.T, width int) Model {
 	t.Helper()
-	startTerm = func(dir string, cols, rows int, persist bool) (*claudeSession, error) {
-		return nil, errors.New("claude sessions disabled in tests")
+	startTerm = func(dir string, cols, rows int, persist bool) (*agentSession, error) {
+		return nil, errors.New("agent sessions disabled in tests")
 	}
-	startShell = func(dir string, cols, rows int, persist bool, kind string) (*claudeSession, error) {
+	startShell = func(dir string, cols, rows int, persist bool, kind string) (*agentSession, error) {
 		return startTerm(dir, cols, rows, persist)
 	}
 
@@ -37,7 +37,7 @@ func newTestModel(t *testing.T, width int) Model {
 }
 
 // TestOpenWorktreePanelLayout: in the panel layout opening a worktree works it
-// in place — it selects the row and focuses the claude pane instead of exiting.
+// in place — it selects the row and focuses the agent pane instead of exiting.
 func TestOpenWorktreePanelLayout(t *testing.T) {
 	m := newTestModel(t, 200)
 	if !m.threePane() {
@@ -54,11 +54,11 @@ func TestOpenWorktreePanelLayout(t *testing.T) {
 	if got.screen != scrMain {
 		t.Errorf("screen = %v, want scrMain", got.screen)
 	}
-	if got.pane != paneClaude {
-		t.Errorf("pane = %d, want paneClaude (%d)", got.pane, paneClaude)
+	if got.pane != paneAgent {
+		t.Errorf("pane = %d, want paneAgent (%d)", got.pane, paneAgent)
 	}
-	if p := got.claudeDir(); p != target {
-		t.Errorf("claudeDir = %q, want %q", p, target)
+	if p := got.agentDir(); p != target {
+		t.Errorf("agentDir = %q, want %q", p, target)
 	}
 }
 
@@ -92,8 +92,8 @@ func TestOpenWorktreeBeforeListRefresh(t *testing.T) {
 	if pending.pendSelect != fresh.Path {
 		t.Fatalf("pendSelect = %q, want %q", pending.pendSelect, fresh.Path)
 	}
-	if got := pending.claudeDir(); got == m.wts[0].Path || got == m.wts[1].Path {
-		t.Errorf("claudeDir latched onto an unrelated worktree: %q", got)
+	if got := pending.agentDir(); got == m.wts[0].Path || got == m.wts[1].Path {
+		t.Errorf("agentDir latched onto an unrelated worktree: %q", got)
 	}
 
 	// the reload that createdMsg kicked off finally lands
@@ -103,11 +103,11 @@ func TestOpenWorktreeBeforeListRefresh(t *testing.T) {
 	if got.pendSelect != "" {
 		t.Errorf("pendSelect = %q, want cleared", got.pendSelect)
 	}
-	if p := got.claudeDir(); p != fresh.Path {
-		t.Errorf("claudeDir = %q, want %q", p, fresh.Path)
+	if p := got.agentDir(); p != fresh.Path {
+		t.Errorf("agentDir = %q, want %q", p, fresh.Path)
 	}
-	if got.pane != paneClaude {
-		t.Errorf("pane = %d, want paneClaude (%d)", got.pane, paneClaude)
+	if got.pane != paneAgent {
+		t.Errorf("pane = %d, want paneAgent (%d)", got.pane, paneAgent)
 	}
 	if got.JumpPath() != "" {
 		t.Errorf("unexpected jump path %q", got.JumpPath())
@@ -134,11 +134,11 @@ func TestCreatedScreenEntryPoints(t *testing.T) {
 		if got.JumpPath() != "" {
 			t.Errorf("enter exited the app with jump path %q", got.JumpPath())
 		}
-		if got.screen != scrMain || got.pane != paneClaude {
-			t.Errorf("screen=%v pane=%d, want scrMain and paneClaude", got.screen, got.pane)
+		if got.screen != scrMain || got.pane != paneAgent {
+			t.Errorf("screen=%v pane=%d, want scrMain and paneAgent", got.screen, got.pane)
 		}
-		if p := got.claudeDir(); p != m.createdPath {
-			t.Errorf("claudeDir = %q, want %q", p, m.createdPath)
+		if p := got.agentDir(); p != m.createdPath {
+			t.Errorf("agentDir = %q, want %q", p, m.createdPath)
 		}
 	})
 
@@ -155,8 +155,8 @@ func TestCreatedScreenEntryPoints(t *testing.T) {
 		if got.JumpPath() != "" {
 			t.Errorf("click exited the app with jump path %q", got.JumpPath())
 		}
-		if got.screen != scrMain || got.pane != paneClaude {
-			t.Errorf("screen=%v pane=%d, want scrMain and paneClaude", got.screen, got.pane)
+		if got.screen != scrMain || got.pane != paneAgent {
+			t.Errorf("screen=%v pane=%d, want scrMain and paneAgent", got.screen, got.pane)
 		}
 	})
 

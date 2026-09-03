@@ -38,7 +38,7 @@ usage:
   treeline rm <target>  remove a worktree by branch, issue key, or path
                         (--branch also deletes the branch; --force skips the
                         confirmations and breaks a lock held on the worktree)
-  treeline sessions     list the claude/shell sessions treeline keeps running
+  treeline sessions     list the opencode/shell sessions treeline keeps running
                         in the background (kill <name> or kill --all to stop)
   treeline shell-init   print the "tl" shell function (add to your .zshrc)
   treeline version      print version
@@ -275,7 +275,7 @@ func runRemove(args []string) {
 	if wt.IsPrimary {
 		fatal("refusing to remove the primary checkout at " + wt.Path)
 	}
-	tmux.KillDir(wt.Path) // don't leave a background claude in a deleted worktree
+	tmux.KillDir(wt.Path) // don't leave a background agent in a deleted worktree
 
 	switch {
 	case wt.Prunable:
@@ -303,11 +303,11 @@ func runRemove(args []string) {
 }
 
 // runSessions lists the sessions treeline keeps alive on its own tmux server
-// after it quits — a detached claude is otherwise invisible — and stops them
+// after it quits — a detached opencode is otherwise invisible — and stops them
 // on request.
 func runSessions(args []string) {
 	if !tmux.Available() {
-		fatal("tmux is not installed, so sessions are not persisted — install tmux to keep claude running between launches")
+		fatal("tmux is not installed, so sessions are not persisted — install tmux to keep opencode running between launches")
 	}
 	if len(args) > 0 {
 		if args[0] != "kill" && args[0] != "rm" {
@@ -321,7 +321,7 @@ func runSessions(args []string) {
 		fatal(err.Error())
 	}
 	if len(sessions) == 0 {
-		fmt.Println("no sessions running — treeline starts them when you open the claude or shell pane")
+		fmt.Println("no sessions running — treeline starts them when you open the opencode or shell pane")
 		return
 	}
 
@@ -446,7 +446,7 @@ func pickRepo(cfg *config.Config) string {
 
 // removeAskingAboutLock removes a worktree, asking first when a lock has to be
 // broken — git needs a second --force for that and refuses outright without
-// one, and whatever holds the lock (a claude session working in there, say)
+// one, and whatever holds the lock (a agent session working in there, say)
 // loses the directory under it.
 func removeAskingAboutLock(root string, wt gitx.Worktree, force bool) {
 	unlock := force

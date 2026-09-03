@@ -16,13 +16,13 @@ import (
 // setup script, shown in the shell pane's tab or not.
 func newSetupPaneModel(t *testing.T, width int, pane bool) Model {
 	t.Helper()
-	startTerm = func(dir string, cols, rows int, persist bool) (*claudeSession, error) {
-		return nil, errors.New("claude sessions disabled in tests")
+	startTerm = func(dir string, cols, rows int, persist bool) (*agentSession, error) {
+		return nil, errors.New("agent sessions disabled in tests")
 	}
-	startShell = func(dir string, cols, rows int, persist bool, kind string) (*claudeSession, error) {
+	startShell = func(dir string, cols, rows int, persist bool, kind string) (*agentSession, error) {
 		return nil, errors.New("shell sessions disabled in tests")
 	}
-	startSetup = func(dir string, cols, rows int, persist bool, script string, env []string) (*claudeSession, error) {
+	startSetup = func(dir string, cols, rows int, persist bool, script string, env []string) (*agentSession, error) {
 		return nil, errors.New("setup sessions disabled in tests")
 	}
 
@@ -48,8 +48,8 @@ func newSetupPaneModel(t *testing.T, width int, pane bool) Model {
 
 // fakeTermSession is a session that never touches a pty, enough for the
 // model to hold in a tab.
-func fakeTermSession(dir string) *claudeSession {
-	return &claudeSession{
+func fakeTermSession(dir string) *agentSession {
+	return &agentSession{
 		dir:    dir,
 		em:     vt.NewEmulator(80, 24),
 		cols:   80,
@@ -73,14 +73,14 @@ func TestSetupTabLeadsShellPane(t *testing.T) {
 	if !m.threePane() {
 		t.Fatal("want panel layout at 200 cols")
 	}
-	dir := m.claudeDir()
+	dir := m.agentDir()
 	kinds := tabKinds(m.termTabsFor(dir))
 	if len(kinds) != 2 || kinds[0] != "setup" || kinds[1] != "shell" {
 		t.Fatalf("tabs = %v, want [setup shell]", kinds)
 	}
 
 	off := newSetupPaneModel(t, 200, false)
-	kinds = tabKinds(off.termTabsFor(off.claudeDir()))
+	kinds = tabKinds(off.termTabsFor(off.agentDir()))
 	if len(kinds) != 1 || kinds[0] != "shell" {
 		t.Fatalf("tabs = %v, want just [shell]", kinds)
 	}
@@ -92,7 +92,7 @@ func TestCreatedLaunchesSetupTab(t *testing.T) {
 	m := newSetupPaneModel(t, 200, true)
 	var gotScript string
 	var gotEnv []string
-	startSetup = func(dir string, cols, rows int, persist bool, script string, env []string) (*claudeSession, error) {
+	startSetup = func(dir string, cols, rows int, persist bool, script string, env []string) (*agentSession, error) {
 		gotScript, gotEnv = script, env
 		return fakeTermSession(dir), nil
 	}
@@ -125,7 +125,7 @@ func TestCreatedLaunchesSetupTab(t *testing.T) {
 func TestCreatedKeepsBackgroundRun(t *testing.T) {
 	m := newSetupPaneModel(t, 200, false)
 	called := false
-	startSetup = func(dir string, cols, rows int, persist bool, script string, env []string) (*claudeSession, error) {
+	startSetup = func(dir string, cols, rows int, persist bool, script string, env []string) (*agentSession, error) {
 		called = true
 		return fakeTermSession(dir), nil
 	}
@@ -146,13 +146,13 @@ func TestCreatedKeepsBackgroundRun(t *testing.T) {
 // "shell", ctrl+←/→ move between tabs, and x closes an exited extra tab.
 func TestShellTabsAddAndCycle(t *testing.T) {
 	m := newSetupPaneModel(t, 200, true)
-	startShell = func(dir string, cols, rows int, persist bool, kind string) (*claudeSession, error) {
+	startShell = func(dir string, cols, rows int, persist bool, kind string) (*agentSession, error) {
 		return fakeTermSession(dir), nil
 	}
-	startSetup = func(dir string, cols, rows int, persist bool, script string, env []string) (*claudeSession, error) {
+	startSetup = func(dir string, cols, rows int, persist bool, script string, env []string) (*agentSession, error) {
 		return fakeTermSession(dir), nil
 	}
-	dir := m.claudeDir()
+	dir := m.agentDir()
 	mm, _ := m.focusPane(paneTerm)
 
 	mm, _ = mm.(Model).keyShell(tea.KeyMsg{Type: tea.KeyCtrlT})

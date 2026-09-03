@@ -137,7 +137,7 @@ type Model struct {
 	searchSeq     int    // bumped per keystroke; stale ticks/results are dropped
 	searchedFor   string // query the current results answer; "" = none yet
 
-	// panel main screen (wide terminals): 0 issues, 1 claude, 2 ide, 3 git,
+	// panel main screen (wide terminals): 0 issues, 1 agent, 2 ide, 3 git,
 	// 4 shell
 	pane int
 	// dragged pane seams: per layout mode, per boundary, cells moved right
@@ -145,7 +145,7 @@ type Model struct {
 	seamDrag  map[int][]int
 	dragSeam  int
 	dragLastX int
-	terms     map[string]*claudeSession // interactive claude per directory
+	terms     map[string]*agentSession // interactive agent per directory
 	// the shell pane is tabbed: the shell itself, the repo's setup script
 	// when it runs there, and any extra shells opened with ctrl+t
 	termTabs    map[string][]*termTab // tabs per directory
@@ -163,7 +163,7 @@ type Model struct {
 
 	// git pane: file picker, hunk staging, commit log
 	gitFor      string    // directory the pane operates on
-	gitFreshAt  time.Time // last auto-refresh; throttles claude-driven reloads
+	gitFreshAt  time.Time // last auto-refresh; throttles agent-driven reloads
 	copiedUntil time.Time // "copied" flash after a drag selection
 	copiedFrom  int       // and the pane it came from
 	gitMode     int
@@ -314,7 +314,7 @@ func New(cfg *config.Config, root string) Model {
 		ide:           ide.New(zones, cfg.Icons()),
 		seamDrag:      map[int][]int{},
 		dragSeam:      -1,
-		terms:         map[string]*claudeSession{},
+		terms:         map[string]*agentSession{},
 		termTabs:      map[string][]*termTab{},
 		termSel:       map[string]int{},
 		termScanned:   map[string]bool{},
@@ -418,7 +418,7 @@ func (m Model) JumpPath() string { return m.jumpPath }
 
 // Close shuts down any embedded sessions the panes started.
 // Close shuts the embedded panes down on the way out. Persisted (tmux-backed)
-// sessions are only detached, so the claude running in them keeps its context
+// sessions are only detached, so the agent running in them keeps its context
 // and the next launch attaches straight back to it. The user's place is
 // written out too, for the next launch to restore.
 func (m Model) Close() {
@@ -468,7 +468,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pendSelect = ""
 			if m.selectWorktree(pend) {
 				var mm tea.Model
-				mm, focus = m.focusPane(paneClaude)
+				mm, focus = m.focusPane(paneAgent)
 				m = mm.(Model)
 			}
 		}
@@ -675,14 +675,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.termTabs[msg.dir] = tabs
 		return m, nil
 
-	case claudeTermMsg:
+	case agentTermMsg:
 		s := msg.s
 		if m.terms[s.dir] != s && !m.ownsTermTab(s) {
 			return m, nil // session was replaced or closed
 		}
-		cmds := []tea.Cmd{waitClaudeTerm(s)} // re-arm; the view reads the vt directly
-		// claude and shell commands edit files; keep the git pane current.
-		// Throttled, not debounced — claude's UI animates continuously.
+		cmds := []tea.Cmd{waitAgentTerm(s)} // re-arm; the view reads the vt directly
+		// agent and shell commands edit files; keep the git pane current.
+		// Throttled, not debounced — agent's UI animates continuously.
 		if s.dir == m.gitFor && time.Since(m.gitFreshAt) > 3*time.Second {
 			m.gitFreshAt = time.Now()
 			cmds = append(cmds, m.reloadGit(), m.loadSelectedFileDiff(), m.loadWorktrees())
@@ -892,7 +892,7 @@ func (m *Model) resize() {
 		m.setTableLayout(l.issues.w, l.issues.h-2)
 		// each pane's inner grid: borders + pane title + title rule
 		for _, t := range m.terms {
-			t.resize(l.claude.w-3, l.claude.h-4)
+			t.resize(l.agent.w-3, l.agent.h-4)
 		}
 		for _, tabs := range m.termTabs {
 			for _, t := range tabs {
@@ -1585,7 +1585,7 @@ func (m Model) openDetail() (tea.Model, tea.Cmd) {
 }
 
 // openWorktree opens a worktree the way the layout allows: in the panel
-// layout it selects the worktree and hands focus to the claude pane so the
+// layout it selects the worktree and hands focus to the agent pane so the
 // card can be worked in place, otherwise it quits so the shell wrapper cd's
 // into the directory. "o" always jumps out to the shell regardless.
 func (m Model) openWorktree(path string) (tea.Model, tea.Cmd) {
@@ -1595,13 +1595,13 @@ func (m Model) openWorktree(path string) (tea.Model, tea.Cmd) {
 	m.screen = scrMain
 	if !m.selectWorktree(path) {
 		// freshly created and loadWorktrees is still in flight, so there is no
-		// row to move the cursor to. Park the path: claudeDir and syncPanes
+		// row to move the cursor to. Park the path: agentDir and syncPanes
 		// defer to it, and worktreesMsg selects it once the list arrives.
 		m.pendSelect = path
 		return m, nil
 	}
 	sync := m.syncPanes()
-	mm, cmd := m.focusPane(paneClaude)
+	mm, cmd := m.focusPane(paneAgent)
 	return mm, tea.Batch(cmd, sync)
 }
 
@@ -1620,7 +1620,7 @@ func (m Model) doRemove(deleteBranch bool) (tea.Model, tea.Cmd) {
 	return m, removeWorktreeCmd(*m.delTarget, deleteBranch, m.delForce, repo.cleanup, repo.name)
 }
 
-// dropSessions ends the claude and shell panes for a directory. Persisted
+// dropSessions ends the agent and shell panes for a directory. Persisted
 // sessions are killed rather than detached: a worktree that is going away has
 // no work worth keeping alive in it.
 func (m Model) dropSessions(dir string) {
@@ -1744,7 +1744,7 @@ func (m Model) guessTypeIdx(labels []string) int {
 
 func (m Model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if k.String() == "ctrl+c" {
-		if m.screen == scrMain && m.threePane() && (m.pane == paneClaude || m.pane == paneTerm) {
+		if m.screen == scrMain && m.threePane() && (m.pane == paneAgent || m.pane == paneTerm) {
 			if s := m.paneSession(m.pane); s != nil && !s.exited.Load() {
 				s.pty.Write([]byte{0x03})
 				return m, nil
@@ -1825,8 +1825,8 @@ func (m Model) keyMain(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "shift+left":
 			return m.focusPane(m.cyclePane(-1))
 		}
-		if m.pane == paneClaude {
-			return m.keyClaude(k) // claude gets everything; ctrl+q leaves
+		if m.pane == paneAgent {
+			return m.keyAgent(k) // agent gets everything; ctrl+q leaves
 		}
 		if m.pane == paneTerm {
 			return m.keyShell(k) // the shell gets everything; ctrl+q leaves
@@ -1927,7 +1927,7 @@ func (m Model) keyMain(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.startDelete() // directory is gone; offer cleanup
 		case ref.wt != nil && m.threePane():
 			// work on the card in place; "o" jumps out to the shell
-			return m.focusPane(paneClaude)
+			return m.focusPane(paneAgent)
 		case ref.wt != nil:
 			return m.jumpTo(ref.wt.Path)
 		case ref.issue != nil:
@@ -1975,17 +1975,17 @@ func (m Model) keyMain(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 const (
 	paneIssues = 0
-	paneClaude = 1
+	paneAgent  = 1
 	paneIDE    = 2
 	paneDiff   = 3
 	paneTerm   = 4
 	paneCount  = 5
 )
 
-// paneEnabled reports whether a pane can hold focus: claude, git and the shell
+// paneEnabled reports whether a pane can hold focus: agent, git and the shell
 // all need a worktree to work in, so with none checked out the issues list is
 // the only pane there is.
-func (m Model) paneEnabled(p int) bool { return p == paneIssues || m.claudeDir() != "" }
+func (m Model) paneEnabled(p int) bool { return p == paneIssues || m.agentDir() != "" }
 
 // cyclePane is the pane delta steps from the current one, skipping any that
 // have no worktree behind them.
@@ -2005,12 +2005,12 @@ func (m Model) focusPane(p int) (tea.Model, tea.Cmd) {
 	}
 	m.pane = p
 	m.resize() // the issues strip grows/shrinks with focus
-	if p == paneClaude {
+	if p == paneAgent {
 		return m, m.ensureTerm()
 	}
 	if p == paneTerm {
 		cmds := []tea.Cmd{m.ensureTermTab()}
-		if dir := m.claudeDir(); dir != "" && m.cfg.Persist() && !m.termScanned[dir] {
+		if dir := m.agentDir(); dir != "" && m.cfg.Persist() && !m.termScanned[dir] {
 			m.termScanned[dir] = true
 			cmds = append(cmds, discoverTermTabsCmd(dir))
 		}
@@ -2021,7 +2021,7 @@ func (m Model) focusPane(p int) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.reloadGit(), m.loadSelectedFileDiff())
 	}
 	if p == paneIDE {
-		m.ideReady().SetWorktree(m.claudeDir())
+		m.ideReady().SetWorktree(m.agentDir())
 		if m.ide.Editing() || m.ide.InputActive() {
 			return m, textarea.Blink
 		}
@@ -2029,10 +2029,10 @@ func (m Model) focusPane(p int) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// ensureTerm starts (or reattaches) the claude session for the selected
+// ensureTerm starts (or reattaches) the agent session for the selected
 // worktree, sized to the pane.
 func (m *Model) ensureTerm() tea.Cmd {
-	dir := m.claudeDir()
+	dir := m.agentDir()
 	if dir == "" || m.terms[dir] != nil {
 		return nil
 	}
@@ -2043,12 +2043,12 @@ func (m *Model) ensureTerm() tea.Cmd {
 		return nil
 	}
 	m.terms[dir] = s
-	return waitClaudeTerm(s)
+	return waitAgentTerm(s)
 }
 
-// termSize is the claude pane's inner grid, a column in from the border.
+// termSize is the agent pane's inner grid, a column in from the border.
 func (m Model) termSize() (cols, rows int) {
-	b := m.layout().claude
+	b := m.layout().agent
 	return b.w - 3, b.h - 4
 }
 
@@ -2070,7 +2070,7 @@ func (m Model) shellSize() (cols, rows int) {
 // tab persists on its own.
 type termTab struct {
 	kind string // "shell", "setup", "shell2" … "shell9"
-	sess *claudeSession
+	sess *agentSession
 }
 
 func findTab(tabs []*termTab, kind string) *termTab {
@@ -2121,7 +2121,7 @@ func (m Model) activeTermTab(dir string) *termTab {
 }
 
 // termSession is the active tab's embedded terminal, nil until started.
-func (m Model) termSession(dir string) *claudeSession {
+func (m Model) termSession(dir string) *agentSession {
 	if t := m.activeTermTab(dir); t != nil {
 		return t.sess
 	}
@@ -2130,7 +2130,7 @@ func (m Model) termSession(dir string) *claudeSession {
 
 // ownsTermTab reports whether a session is (still) one of the shell pane's
 // tabs, so stale output notifications can be dropped.
-func (m Model) ownsTermTab(s *claudeSession) bool {
+func (m Model) ownsTermTab(s *agentSession) bool {
 	for _, t := range m.termTabs[s.dir] {
 		if t.sess == s {
 			return true
@@ -2142,7 +2142,7 @@ func (m Model) ownsTermTab(s *claudeSession) bool {
 // setupRepo is the repo whose setup script would run in the shell pane's
 // setup tab for the selected worktree, and whether that tab is wanted.
 func (m Model) setupRepo() (repoEntry, bool) {
-	dir := m.claudeDir()
+	dir := m.agentDir()
 	if dir == "" {
 		return repoEntry{}, false
 	}
@@ -2162,7 +2162,7 @@ func (m Model) setupRepo() (repoEntry, bool) {
 // setup tab. A persisted session that is still running is attached, not
 // started over.
 func (m *Model) ensureTermTab() tea.Cmd {
-	dir := m.claudeDir()
+	dir := m.agentDir()
 	if dir == "" {
 		return nil
 	}
@@ -2172,7 +2172,7 @@ func (m *Model) ensureTermTab() tea.Cmd {
 	}
 	cols, rows := m.shellSize()
 	var (
-		s   *claudeSession
+		s   *agentSession
 		err error
 	)
 	if t.kind == "setup" {
@@ -2195,7 +2195,7 @@ func (m *Model) ensureTermTab() tea.Cmd {
 		return nil
 	}
 	t.sess = s
-	return waitClaudeTerm(s)
+	return waitAgentTerm(s)
 }
 
 // startSetupTab launches the setup script in the shell pane's setup tab the
@@ -2227,7 +2227,7 @@ func (m *Model) startSetupTab(dir string, repo repoEntry, branch, issue string) 
 		return nil
 	}
 	t.sess = s
-	return waitClaudeTerm(s)
+	return waitAgentTerm(s)
 }
 
 // switchTermTab moves the active tab by delta, starting its session if the
@@ -2316,18 +2316,18 @@ func discoverTermTabsCmd(dir string) tea.Cmd {
 
 // paneSession maps an embedded-terminal pane to its session for the
 // selected directory.
-func (m Model) paneSession(pane int) *claudeSession {
+func (m Model) paneSession(pane int) *agentSession {
 	if pane == paneTerm {
-		return m.termSession(m.claudeDir())
+		return m.termSession(m.agentDir())
 	}
-	return m.terms[m.claudeDir()]
+	return m.terms[m.agentDir()]
 }
 
 func (m Model) keyShell(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if k.String() == "ctrl+q" {
 		return m.focusPane(m.cyclePane(1))
 	}
-	dir := m.claudeDir()
+	dir := m.agentDir()
 	if dir == "" {
 		return m.focusPane(paneIssues) // the worktree went away under us
 	}
@@ -2366,11 +2366,11 @@ func (m Model) keyShell(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// claudeDir is the directory the claude pane talks in: the selected issue's
+// agentDir is the directory the agent pane talks in: the selected issue's
 // worktree, or "" when the selection has no usable worktree. It deliberately
 // does not fall back to the repo root — with no worktree checked out the
-// claude, git and shell panes have nothing to show and stay empty.
-func (m Model) claudeDir() string {
+// agent, git and shell panes have nothing to show and stay empty.
+func (m Model) agentDir() string {
 	if m.pendSelect != "" {
 		return m.pendSelect
 	}
@@ -2418,7 +2418,7 @@ func (m *Model) syncPanes() tea.Cmd {
 	}
 
 	// keeps its place instead when edits are unsaved
-	m.ideReady().SetWorktree(m.claudeDir())
+	m.ideReady().SetWorktree(m.agentDir())
 	if r := m.restoreIDE; r != nil && m.ide.Dir() != "" {
 		m.restoreIDE = nil
 		if r.For == m.ide.Dir() {
@@ -2426,7 +2426,7 @@ func (m *Model) syncPanes() tea.Cmd {
 		}
 	}
 
-	if dir := m.claudeDir(); dir != m.gitFor {
+	if dir := m.agentDir(); dir != m.gitFor {
 		m.gitFor = dir
 		m.gitMode = gitModeFiles
 		m.gitScroll = [2]int{}
@@ -2445,11 +2445,11 @@ func (m *Model) syncPanes() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
-func (m Model) keyClaude(k tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) keyAgent(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if k.String() == "ctrl+q" {
 		return m.focusPane(m.cyclePane(1))
 	}
-	dir := m.claudeDir()
+	dir := m.agentDir()
 	if dir == "" {
 		return m.focusPane(paneIssues) // the worktree went away under us
 	}
@@ -2619,13 +2619,13 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		switch m.screen {
 		case scrMain:
 			// the wheel works the pane under the pointer, focused or not —
-			// scrolling claude's scrollback should not need a ctrl+q first.
+			// scrolling agent's scrollback should not need a ctrl+q first.
 			// Outside the panels it falls back to the focused pane.
 			over := m.pane
 			if p, ok := m.paneUnder(msg); ok {
 				over = p
 			}
-			if m.threePane() && (over == paneClaude || over == paneTerm) {
+			if m.threePane() && (over == paneAgent || over == paneTerm) {
 				if s := m.paneSession(over); s != nil {
 					// a full-screen program does its own scrolling: it leaves
 					// nothing in our scrollback, so the wheel belongs to it
@@ -2699,13 +2699,13 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 		// drag selection, like a normal terminal: press anchors, drag
 		// extends, release copies to the clipboard. The git pane selects over
-		// its rendered text; the claude and shell panes over terminal cells.
+		// its rendered text; the agent and shell panes over terminal cells.
 		if m.screen == scrMain && m.threePane() {
 			if done, cmd := m.selectGitText(msg); done {
 				return m, cmd
 			}
-			s, z, top := m.terms[m.claudeDir()], m.zones.Get("pane:claude"), 2
-			if sh, zt := m.termSession(m.claudeDir()), m.zones.Get("pane:term"); sh != nil && (sh.selecting() || (zt != nil && !zt.IsZero() && zt.InBounds(msg))) {
+			s, z, top := m.terms[m.agentDir()], m.zones.Get("pane:agent"), 2
+			if sh, zt := m.termSession(m.agentDir()), m.zones.Get("pane:term"); sh != nil && (sh.selecting() || (zt != nil && !zt.IsZero() && zt.InBounds(msg))) {
 				s, z = sh, zt
 				top = 2 + tabBarH // the shell's tab row sits above its grid
 			}
@@ -2734,7 +2734,7 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 									m.err = err
 								} else {
 									m.copiedUntil = time.Now().Add(2 * time.Second)
-									m.copiedFrom = paneClaude
+									m.copiedFrom = paneAgent
 								}
 							}
 							return m, nil
@@ -2760,22 +2760,22 @@ func (m Model) seamPairs() [][2]string {
 	switch m.layoutMode() {
 	case layFour:
 		return [][2]string{
-			{"pane:issues", "pane:claude"},
-			{"pane:claude", "pane:ide"},
+			{"pane:issues", "pane:agent"},
+			{"pane:agent", "pane:ide"},
 			{"pane:ide", "pane:diff"},
 			{"pane:diff", "pane:term"},
 		}
 	case layCols:
 		return [][2]string{
-			{"pane:issues", "pane:claude"},
-			{"pane:claude", "pane:ide"},
+			{"pane:issues", "pane:agent"},
+			{"pane:agent", "pane:ide"},
 			{"pane:ide", "pane:diff"},
 		}
 	case layStack:
 		// the issues strip sits above the band; only the work panes share
 		// vertical seams
 		return [][2]string{
-			{"pane:claude", "pane:ide"},
+			{"pane:agent", "pane:ide"},
 			{"pane:ide", "pane:diff"},
 		}
 	}
@@ -2840,7 +2840,7 @@ func (m Model) paneUnder(msg tea.MouseMsg) (int, bool) {
 		id   string
 		pane int
 	}{
-		{"pane:claude", paneClaude},
+		{"pane:agent", paneAgent},
 		{"pane:ide", paneIDE},
 		{"pane:diff", paneDiff},
 		{"pane:term", paneTerm},
@@ -2856,8 +2856,8 @@ func (m Model) paneUnder(msg tea.MouseMsg) (int, bool) {
 // paneZoneID is the zone a pane's inside is marked with.
 func paneZoneID(pane int) string {
 	switch pane {
-	case paneClaude:
-		return "pane:claude"
+	case paneAgent:
+		return "pane:agent"
 	case paneIDE:
 		return "pane:ide"
 	case paneTerm:
@@ -3012,7 +3012,7 @@ func (m *Model) selectGitText(msg tea.MouseMsg) (bool, tea.Cmd) {
 // the tab under the pointer, opens a new shell on the +, or closes an extra
 // shell on its ✕ — running or not, the way a terminal tab closes.
 func (m *Model) clickTermTab(msg tea.MouseMsg) (tea.Cmd, bool) {
-	dir := m.claudeDir()
+	dir := m.agentDir()
 	if dir == "" {
 		return nil, false
 	}
@@ -3130,10 +3130,10 @@ func (m Model) handleClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		switch {
-		case m.clicked(msg, "pane:claude"):
+		case m.clicked(msg, "pane:agent"):
 			// a click on a URL inside the terminal opens it
-			if s := m.terms[m.claudeDir()]; s != nil {
-				z := m.zones.Get("pane:claude")
+			if s := m.terms[m.agentDir()]; s != nil {
+				z := m.zones.Get("pane:agent")
 				x, y := z.Pos(msg)
 				// pane chrome around the body: a pad column, title and rule
 				if url := s.urlAt(x-1, y-2); url != "" {
@@ -3141,7 +3141,7 @@ func (m Model) handleClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 			}
-			return m.focusPane(paneClaude)
+			return m.focusPane(paneAgent)
 		case m.clicked(msg, "pane:diff"):
 			return m.focusPane(paneDiff)
 		case m.clicked(msg, "pane:term"):
@@ -3149,7 +3149,7 @@ func (m Model) handleClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				mm, fcmd := m.focusPane(paneTerm)
 				return mm, tea.Batch(cmd, fcmd)
 			}
-			if s := m.termSession(m.claudeDir()); s != nil {
+			if s := m.termSession(m.agentDir()); s != nil {
 				z := m.zones.Get("pane:term")
 				x, y := z.Pos(msg)
 				if url := s.urlAt(x-1, y-2-tabBarH); url != "" {

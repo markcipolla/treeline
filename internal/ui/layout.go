@@ -3,7 +3,7 @@ package ui
 // Main-screen layouts, by terminal width. A narrow terminal gets the issues
 // table on its own; as the space grows the work panes join it, first stacked
 // under a full-width issues strip, then as columns of their own. The ide pane
-// sits between claude and git wherever the work panes show.
+// sits between agent and git wherever the work panes show.
 //
 //	layTable   layStack          layCols                 layFour
 //	┌──────┐   ┌────────────┐   ┌────┬────┬───┬────┐   ┌───┬───┬───┬───┬───┐
@@ -15,17 +15,17 @@ package ui
 //	           └────┴───┴───┘
 const (
 	layTable = iota // just the issues table
-	layStack        // issues strip on top, claude | git over shell below
-	layCols         // issues | claude | git over shell
-	layFour         // issues | claude | git | shell
+	layStack        // issues strip on top, agent | git over shell below
+	layCols         // issues | agent | git over shell
+	layFour         // issues | agent | git | shell
 )
 
 // Width thresholds between the layouts. Each step has to leave every column
 // wide enough to be worth having: the issues grid needs ~50 columns before it
 // starts shedding cells, and a terminal pane below ~50 is uncomfortable for
-// claude and for a shell alike.
+// agent and for a shell alike.
 const (
-	minPanels = 110 // claude, ide and git fit beside the issues strip
+	minPanels = 110 // agent, ide and git fit beside the issues strip
 	minCols   = 180 // ...and the issues list fits beside them
 	minFour   = 280 // ...and the shell earns a column of its own
 )
@@ -84,8 +84,8 @@ type box struct{ w, h int }
 // resize of the embedded terminals, and the mouse handlers that need to know
 // which cell a click landed on.
 type layout struct {
-	mode                           int
-	issues, claude, ide, git, term box
+	mode                          int
+	issues, agent, ide, git, term box
 }
 
 func (m Model) layout() layout {
@@ -106,7 +106,7 @@ func (m Model) layout() layout {
 		gitH, termH := splitRight(bottomH)
 		cols := m.bandCols(w)
 		l.issues = box{w, topH}
-		l.claude = box{cols[0], bottomH}
+		l.agent = box{cols[0], bottomH}
 		l.ide = box{cols[1], bottomH}
 		l.git = box{cols[2], gitH}
 		l.term = box{cols[2], termH}
@@ -115,7 +115,7 @@ func (m Model) layout() layout {
 		gitH, termH := splitRight(avail)
 		cols := m.bandCols(w)
 		l.issues = box{cols[0], avail}
-		l.claude = box{cols[1], avail}
+		l.agent = box{cols[1], avail}
 		l.ide = box{cols[2], avail}
 		l.git = box{cols[3], gitH}
 		l.term = box{cols[3], termH}
@@ -123,7 +123,7 @@ func (m Model) layout() layout {
 	case layFour:
 		cols := m.bandCols(w)
 		l.issues = box{cols[0], avail}
-		l.claude = box{cols[1], avail}
+		l.agent = box{cols[1], avail}
 		l.ide = box{cols[2], avail}
 		l.git = box{cols[3], avail}
 		l.term = box{cols[4], avail}

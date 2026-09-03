@@ -15,7 +15,7 @@ import (
 
 // paneWith starts a session running script and pumps it the way the app does:
 // pty into the emulator, and the emulator's replies back out to the pty.
-func paneWith(t *testing.T, script string) *claudeSession {
+func paneWith(t *testing.T, script string) *agentSession {
 	t.Helper()
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("no shell")
@@ -28,7 +28,7 @@ func paneWith(t *testing.T, script string) *claudeSession {
 	}
 	em := vt.NewEmulator(40, 10)
 	em.SetScrollbackSize(500)
-	s := &claudeSession{dir: t.TempDir(), cmd: cmd, pty: p, em: em, cols: 40, rows: 10, notify: make(chan struct{}, 1)}
+	s := &agentSession{dir: t.TempDir(), cmd: cmd, pty: p, em: em, cols: 40, rows: 10, notify: make(chan struct{}, 1)}
 	s.trackMouseModes()
 	go func() {
 		buf := make([]byte, 4096)
@@ -49,7 +49,7 @@ func paneWith(t *testing.T, script string) *claudeSession {
 	return s
 }
 
-// TestWheelReachesFullScreenProgram: claude runs full-screen, repainting in
+// TestWheelReachesFullScreenProgram: agent runs full-screen, repainting in
 // place, so no line ever scrolls off into our scrollback and scrollBy has
 // nothing to move. The wheel has to go to the program instead.
 func TestWheelReachesFullScreenProgram(t *testing.T) {

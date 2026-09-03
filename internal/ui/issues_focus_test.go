@@ -12,7 +12,7 @@ func TestIssuesColumnGrowsOnFocus(t *testing.T) {
 			t.Fatalf("%d cols: want a column layout, got mode %d", width, m.layoutMode())
 		}
 
-		m.pane = paneClaude
+		m.pane = paneAgent
 		m.resize()
 		away := m.layout().issues.w
 		shed := 0
@@ -47,7 +47,7 @@ func TestIssuesColumnGrowsOnFocus(t *testing.T) {
 		for _, p := range []struct {
 			name string
 			b    box
-		}{{"claude", l.claude}, {"ide", l.ide}, {"git", l.git}, {"term", l.term}} {
+		}{{"agent", l.agent}, {"ide", l.ide}, {"git", l.git}, {"term", l.term}} {
 			if l.mode == layCols && p.name == "term" {
 				continue // shares the git column's width, checked there
 			}
@@ -66,7 +66,7 @@ func TestIssuesColumnFitsNarrowTerminal(t *testing.T) {
 	m.pane = paneIssues
 	m.resize()
 	l := m.layout()
-	total := l.issues.w + l.claude.w + l.git.w
+	total := l.issues.w + l.agent.w + l.git.w
 	if l.issues.w >= total {
 		t.Errorf("issues column took the whole band: %d of %d", l.issues.w, total)
 	}

@@ -18,7 +18,7 @@ type Config struct {
 	GitHub      GitHubConfig `json:"github"`
 	BranchTypes []string     `json:"branch_types"`
 	SlugMaxLen  int          `json:"slug_max_len"`
-	// PersistSessions keeps the claude and shell panes running on treeline's
+	// PersistSessions keeps the agent and shell panes running on treeline's
 	// own tmux server, so quitting treeline detaches from them instead of
 	// killing them and the next launch picks them back up. Unset means on
 	// wherever tmux is installed; set it to false to opt out.

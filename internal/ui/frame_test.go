@@ -50,7 +50,7 @@ func TestFrameBoxesAreClosed(t *testing.T) {
 		if !m.selectWorktree(m.wts[1].Path) {
 			t.Fatal("no row for the second worktree")
 		}
-		for _, pane := range []int{paneIssues, paneClaude, paneIDE, paneDiff, paneTerm} {
+		for _, pane := range []int{paneIssues, paneAgent, paneIDE, paneDiff, paneTerm} {
 			mm, _ := m.focusPane(pane)
 			rows := panelRows(t, mm.(Model))
 
@@ -84,8 +84,8 @@ func TestFrameBoxesAreClosed(t *testing.T) {
 // content row of the column layouts crosses a "││" seam per boundary.
 func TestFrameSeamsAreTwoLines(t *testing.T) {
 	for _, tc := range []struct{ width, seams int }{
-		{200, 3}, // issues │ claude │ ide │ git-over-shell
-		{300, 4}, // issues │ claude │ ide │ git │ shell
+		{200, 3}, // issues │ agent │ ide │ git-over-shell
+		{300, 4}, // issues │ agent │ ide │ git │ shell
 	} {
 		m := withIssues(newTestModel(t, tc.width))
 		m.height = 34
@@ -148,7 +148,7 @@ func TestFrameRowsAreRectangular(t *testing.T) {
 			t.Fatal("no row for the second worktree")
 		}
 		// a body far too wide and too tall for any pane
-		m.terms[m.claudeDir()] = fakeSession(m.claudeDir(), width*2, 200)
+		m.terms[m.agentDir()] = fakeSession(m.agentDir(), width*2, 200)
 
 		rows := panelRows(t, m)
 		want := lipgloss.Width(rows[0])
