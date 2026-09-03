@@ -25,6 +25,13 @@ func logModel(t *testing.T) Model {
 		{Short: "bbb2222", Author: "Test", When: "a day ago", Subject: "middle"},
 		{Short: "ccc3333", Author: "Test", When: "a week ago", Subject: "oldest"},
 	}
+	m.logRows = []gitx.LogRow{
+		{Graph: "● ", Commit: 0},
+		{Divider: true, Commit: -1},
+		{Graph: "● ", Commit: 1},
+		{Graph: "● ", Commit: 2},
+	}
+	m.logBaseRef = "origin/main"
 	return m
 }
 
