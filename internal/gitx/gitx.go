@@ -348,34 +348,121 @@ type Commit struct {
 	Short   string
 	Author  string
 	When    string // relative, e.g. "2 hours ago"
+	Refs    string // decorations: branches and tags pointing here
 	Subject string
 	Body    string
 }
 
-// Log returns up to n commits, newest first.
-func Log(dir string, n int) ([]Commit, error) {
-	out, err := run(dir, "log", fmt.Sprintf("--max-count=%d", n),
-		"--format=%h%x1f%an%x1f%ar%x1f%s%x1f%b%x1e")
+// LogRow is one display line of the graph log: the rail drawing, and for
+// rows that carry a commit, an index into GraphLog.Commits. A Divider row
+// marks where the checked-out branch forked from the base ref.
+type LogRow struct {
+	Graph   string
+	Commit  int // index into Commits; -1 for rail-only and divider rows
+	Divider bool
+}
+
+// GraphLog is git log --all --graph with the rails redrawn in the
+// box-drawing set panel borders use.
+type GraphLog struct {
+	Rows    []LogRow
+	Commits []Commit // in display order, newest first
+	BaseRef string   // ref the divider marks; "" when there is no divider
+}
+
+// prettyRail redraws git's ASCII graph rails with box-drawing characters.
+func prettyRail(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case '*':
+			return '●'
+		case '|':
+			return '│'
+		case '/':
+			return '╱'
+		case '\\':
+			return '╲'
+		case '_', '-':
+			return '─'
+		case '.':
+			return '·'
+		}
+		return r
+	}, s)
+}
+
+// Log returns up to n commits across all refs, newest first, each with its
+// slice of the graph. The graph pass yields only rails and hashes — one line
+// per commit — and a second pass fills in the details, so multi-line bodies
+// never tangle with the rail drawing.
+func Log(dir string, n int) (GraphLog, error) {
+	var g GraphLog
+	max := fmt.Sprintf("--max-count=%d", n)
+	graph, err := run(dir, "log", "--all", "--graph", "--no-color", max, "--format=%x1f%h")
 	if err != nil {
-		return nil, err
+		return g, err
 	}
-	var commits []Commit
-	for _, rec := range strings.Split(out, "\x1e") {
+	if graph == "" {
+		return g, nil
+	}
+	details, err := run(dir, "log", "--all", max,
+		"--format=%h%x1f%an%x1f%ar%x1f%D%x1f%s%x1f%b%x1e")
+	if err != nil {
+		return g, err
+	}
+	byHash := map[string]Commit{}
+	for _, rec := range strings.Split(details, "\x1e") {
 		rec = strings.TrimSpace(rec)
 		if rec == "" {
 			continue
 		}
-		f := strings.SplitN(rec, "\x1f", 5)
-		if len(f) < 4 {
+		f := strings.SplitN(rec, "\x1f", 6)
+		if len(f) < 5 {
 			continue
 		}
-		c := Commit{Short: f[0], Author: f[1], When: f[2], Subject: f[3]}
-		if len(f) == 5 {
-			c.Body = strings.TrimSpace(f[4])
+		c := Commit{Short: f[0], Author: f[1], When: f[2], Refs: f[3], Subject: f[4]}
+		if len(f) == 6 {
+			c.Body = strings.TrimSpace(f[5])
 		}
-		commits = append(commits, c)
+		byHash[c.Short] = c
 	}
-	return commits, nil
+	for _, line := range strings.Split(graph, "\n") {
+		rail, hash, isCommit := strings.Cut(line, "\x1f")
+		row := LogRow{Graph: prettyRail(rail), Commit: -1}
+		if c, ok := byHash[hash]; isCommit && ok {
+			g.Commits = append(g.Commits, c)
+			row.Commit = len(g.Commits) - 1
+		}
+		g.Rows = append(g.Rows, row)
+	}
+	g.markBranchStart(dir)
+	return g, nil
+}
+
+// markBranchStart inserts a divider row above the merge-base with the
+// default base ref: everything the branch added since forking sits above it.
+// On the base branch itself there is no fork, so no divider.
+func (g *GraphLog) markBranchStart(dir string) {
+	base := DefaultBase(dir)
+	if base == "HEAD" {
+		return
+	}
+	mb, err := run(dir, "merge-base", base, "HEAD")
+	if err != nil || mb == "" {
+		return
+	}
+	if head, err := run(dir, "rev-parse", "HEAD"); err != nil || head == mb {
+		return
+	}
+	for i, row := range g.Rows {
+		if row.Commit >= 0 && strings.HasPrefix(mb, g.Commits[row.Commit].Short) {
+			rows := append([]LogRow{}, g.Rows[:i]...)
+			rows = append(rows, LogRow{Divider: true, Commit: -1})
+			g.Rows = append(rows, g.Rows[i:]...)
+			g.BaseRef = base
+			return
+		}
+	}
 }
 
 // CommitDiff returns the colored patch one commit introduced, with a

@@ -251,6 +251,66 @@ func TestCommitDiff(t *testing.T) {
 	}
 }
 
+// The log's rails come back as box-drawing, decorations ride along, and a
+// divider row marks the merge-base with the default base — but only once the
+// checked-out branch has actually forked from it.
+func TestLogGraphAndBranchDivider(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	root := tempRepo(t)
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, root, "add", ".")
+	mustGit(t, root, "commit", "-m", "second")
+
+	// on the base branch itself there is no fork to mark
+	g, err := Log(root, 50)
+	if err != nil {
+		t.Fatalf("Log: %v", err)
+	}
+	if g.BaseRef != "" {
+		t.Errorf("BaseRef = %q, want no divider on the base branch itself", g.BaseRef)
+	}
+
+	mustGit(t, root, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(root, "b.txt"), []byte("b\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, root, "add", ".")
+	mustGit(t, root, "commit", "-m", "feat work")
+
+	g, err = Log(root, 50)
+	if err != nil {
+		t.Fatalf("Log: %v", err)
+	}
+	if len(g.Commits) != 3 {
+		t.Fatalf("got %d commits, want 3: %+v", len(g.Commits), g.Commits)
+	}
+	if g.Commits[0].Subject != "feat work" || !strings.Contains(g.Commits[0].Refs, "feature") {
+		t.Errorf("newest commit should be the decorated branch tip, got %+v", g.Commits[0])
+	}
+	if !strings.Contains(g.Rows[0].Graph, "●") {
+		t.Errorf("rails should be box-drawing, got %q", g.Rows[0].Graph)
+	}
+	if g.BaseRef != "main" {
+		t.Errorf("BaseRef = %q, want main", g.BaseRef)
+	}
+	div := -1
+	for i, row := range g.Rows {
+		if row.Divider {
+			div = i
+		}
+	}
+	if div < 0 {
+		t.Fatal("no divider row in a forked branch's log")
+	}
+	if next := g.Rows[div+1]; next.Commit < 0 || g.Commits[next.Commit].Subject != "second" {
+		t.Errorf("the divider should sit directly above the merge-base, got row %+v", g.Rows[div+1])
+	}
+}
+
 func TestChangedLines(t *testing.T) {
 	dir := tempRepo(t)
 
