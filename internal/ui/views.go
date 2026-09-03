@@ -344,13 +344,14 @@ func (m Model) viewPanels() string {
 		if sel < 0 || sel >= len(tabs) {
 			sel = 0
 		}
-		termTitle = m.termTabBar(tabs, sel, m.pane == paneTerm)
+		termTitle = "shell"
+		var body string
 		switch t := tabs[sel]; {
 		case t.sess == nil:
 			if t.kind == "setup" {
-				termBody = dimStyle.Render("the setup script runs here when a worktree is created — press enter to run it now")
+				body = dimStyle.Render("the setup script runs here when a worktree is created — press enter to run it now")
 			} else {
-				termBody = dimStyle.Render("tab here (or click) to open a shell in this worktree\n\nctrl+t opens another shell tab")
+				body = dimStyle.Render("tab here (or click) to open a shell in this worktree\n\nctrl+t opens another shell tab")
 			}
 		case t.sess.exited.Load():
 			termTitle += " · exited"
@@ -359,14 +360,14 @@ func (m Model) viewPanels() string {
 				case t.kind == "setup":
 					termTitle += " — enter reruns"
 				case t.kind != "shell":
-					termTitle += " — enter restarts, x closes"
+					termTitle += " — enter restarts, ✕ closes"
 				default:
 					termTitle += " — enter restarts"
 				}
 			}
-			termBody = t.sess.render(false)
+			body = t.sess.render(false)
 		default:
-			termBody = t.sess.render(m.pane == paneTerm)
+			body = t.sess.render(m.pane == paneTerm)
 			if t.sess.tmuxName != "" {
 				termTitle += dimStyle.Render(" · tmux")
 			}
@@ -374,6 +375,8 @@ func (m Model) viewPanels() string {
 				termTitle += fmt.Sprintf(" · ↑%d", n)
 			}
 		}
+		bar := m.termTabBar(tabs, sel, l.term.w-3, m.pane == paneTerm)
+		termBody = strings.Join(append(bar, strings.Split(body, "\n")...), "\n")
 	}
 	term := m.mark("pane:term",
 		m.workPart(l.term, m.pane == paneTerm, termTitle, termBody))
@@ -438,15 +441,13 @@ func (m Model) workPart(b box, focused bool, title, body string) panePart {
 
 func termTabZoneID(i int) string { return "termtab:" + strconv.Itoa(i) }
 
-// termTabBar is the shell pane's title row: its tabs, the active one carrying
-// the pane style, with a trailing + that opens another shell. ctrl+←/→ move
-// between them from the keyboard.
-func (m Model) termTabBar(tabs []*termTab, sel int, focused bool) string {
-	active := paneTitleStyle
-	if focused {
-		active = paneTitleFocus
-	}
-	parts := make([]string, 0, len(tabs)+1)
+// termTabBar is the shell pane's tab row, drawn like the ide's: one bordered
+// tab per shell (the setup script's leads when the repo shows it here), the
+// active one open at the bottom, a ✕ on an extra shell — clicking it closes
+// the tab, killing what runs there — and a trailing + that opens another
+// shell. ctrl+←/→ move between them from the keyboard.
+func (m Model) termTabBar(tabs []*termTab, sel, w int, focused bool) []string {
+	items := make([]tabItem, 0, len(tabs)+1)
 	for i, t := range tabs {
 		// every shell tab reads "shell" — the numbers in the kind only keep
 		// their tmux sessions apart
@@ -454,14 +455,14 @@ func (m Model) termTabBar(tabs []*termTab, sel int, focused bool) string {
 		if strings.HasPrefix(label, "shell") {
 			label = "shell"
 		}
-		st := dimStyle
-		if i == sel {
-			st = active
+		it := tabItem{zone: termTabZoneID(i), label: label, active: i == sel}
+		if t.kind != "shell" && t.kind != "setup" {
+			it.closeZone = "termtab:x"
 		}
-		parts = append(parts, m.zones.Mark(termTabZoneID(i), st.Render(label)))
+		items = append(items, it)
 	}
-	parts = append(parts, m.zones.Mark("termtab:new", dimStyle.Render("+")))
-	return strings.Join(parts, dimStyle.Render(" │ "))
+	items = append(items, tabItem{zone: "termtab:new", label: "+"})
+	return m.tabBar(w, focused, items)
 }
 
 // mark tags a pane's rows for the mouse. The zone covers the pane's inside,
