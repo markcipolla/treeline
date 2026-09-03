@@ -651,7 +651,10 @@ func TestIDETabCloseClick(t *testing.T) {
 	m = typeIDE(t, m, "zz")
 	m = keyIDE(t, m, tea.KeyMsg{Type: tea.KeyEsc}) // dirty now
 
-	z = awaitZone(t, m, ideTabCloseZoneID())
+	// the ✕ moved: closing util.go and the new ● both shifted it, and the
+	// zone still answers with where the two-tab frame put it until the zone
+	// manager catches up — clicking there would miss
+	z = awaitZoneMoved(t, m, ideTabCloseZoneID(), z.StartX)
 	click = tea.MouseMsg{X: z.StartX, Y: z.StartY,
 		Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease}
 	mm, _ = m.Update(click)
