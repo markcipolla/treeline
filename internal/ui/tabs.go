@@ -15,6 +15,16 @@ import (
 // tabBarH is the strip's height: a bordered tab is three rows tall.
 const tabBarH = 3
 
+// the tab shapes: every tab hangs from the same shelf line, the active one's
+// bottom opens into the content below it (internal/ide draws its own copy —
+// the pane also ships standalone as tide and cannot lean on this package)
+var (
+	tabBorder = lipgloss.Border{Top: "─", Bottom: "─", Left: "│", Right: "│",
+		TopLeft: "╭", TopRight: "╮", BottomLeft: "┴", BottomRight: "┴"}
+	tabActiveBorder = lipgloss.Border{Top: "─", Bottom: " ", Left: "│", Right: "│",
+		TopLeft: "╭", TopRight: "╮", BottomLeft: "┘", BottomRight: "└"}
+)
+
 // tabItem is one tab of a strip.
 type tabItem struct {
 	zone      string // click zone covering the whole tab
@@ -36,11 +46,11 @@ func (m Model) tabBar(w int, focused bool, items []tabItem) []string {
 	parts := make([]string, 0, len(items))
 	activeIdx := 0
 	for i, it := range items {
-		st := lipgloss.NewStyle().Border(ideTabBorder).BorderForeground(subtle).Padding(0, 1)
+		st := lipgloss.NewStyle().Border(tabBorder).BorderForeground(subtle).Padding(0, 1)
 		body := dimStyle.Render(it.label)
 		if it.active {
 			activeIdx = i
-			st = st.Border(ideTabActiveBorder).BorderForeground(activeBorder)
+			st = st.Border(tabActiveBorder).BorderForeground(activeBorder)
 			body = activeText.Render(it.label)
 			if it.closeZone != "" {
 				body += " " + m.zones.Mark(it.closeZone, dimStyle.Render("✕"))
