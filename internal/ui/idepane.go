@@ -137,6 +137,8 @@ func (m *Model) resetIDE(dir string) {
 	m.ideEditor.SetValue("")
 	m.ideEditor.Blur()
 	m.ideEditing = false
+	m.ideSelAnchor = -1
+	m.clearIDEMulti()
 	m.ideFocus = ideFocusTree
 	m.closeIDEInput()
 	m.ideFilter, m.ideFindQ, m.ideFindHits = "", "", nil
@@ -383,6 +385,8 @@ func (m *Model) closeIDEBuf(i int) {
 		m.ideCur = 0
 		m.ideEditor.SetValue("")
 		m.ideEditing = false
+		m.ideSelAnchor = -1
+		m.clearIDEMulti()
 		m.ideEditor.Blur()
 		m.ideFocus = ideFocusTree
 	}
@@ -400,17 +404,24 @@ func (m *Model) alignIDEEditor() {
 	if b := m.ideBuf(); b != nil {
 		cur = b.cursor
 	}
-	m.ideEditor.CursorStart()
-	for m.ideEditor.Line() > cur {
+	m.setIDECursorAt(cur, 0)
+}
+
+// setIDECursorAt walks the hidden editor's cursor to a buffer row and column.
+// The textarea only exposes relative row moves, so the row is reached by
+// stepping; the column clamps to the line.
+func (m *Model) setIDECursorAt(row, col int) {
+	for m.ideEditor.Line() > row {
 		m.ideEditor.CursorUp()
 	}
-	for m.ideEditor.Line() < cur {
+	for m.ideEditor.Line() < row {
 		before := m.ideEditor.Line()
 		m.ideEditor.CursorDown()
 		if m.ideEditor.Line() == before {
 			break // the buffer ran out of lines under the cursor
 		}
 	}
+	m.ideEditor.SetCursor(col)
 }
 
 // saveIDEBuf writes the active buffer back, keeping the file's mode, and
@@ -932,7 +943,16 @@ func (m Model) idePaneContent(w, h int) (string, string) {
 	}
 	switch {
 	case m.ideEditing:
-		title += okStyle.Render(" · editing") + dimStyle.Render(" — ctrl+s saves, esc views")
+		switch lo, hi, sel := m.ideSelSpan(); {
+		case m.ideMultiLo >= 0:
+			title += okStyle.Render(fmt.Sprintf(" · %d cursors", len(m.ideMultiCols))) +
+				dimStyle.Render(" — typing edits every line, esc drops")
+		case sel:
+			title += okStyle.Render(fmt.Sprintf(" · %d lines", hi-lo+1)) +
+				dimStyle.Render(" — tab indents, ctrl+e adds cursors, esc drops")
+		default:
+			title += okStyle.Render(" · editing") + dimStyle.Render(" — ctrl+s saves, esc views")
+		}
 	case m.ideAnyDirty() && m.ideFor != m.claudeDir():
 		title += warnStyle.Render(" · unsaved edits hold this worktree")
 	case m.ideFindQ != "" && cur != nil:
@@ -1288,6 +1308,22 @@ func (m Model) ideEditorRows(w, h int) []string {
 		}
 		plain = strings.Split(b.val, "\n")
 	}
+	selLo, selHi, selOn := m.ideSelSpan()
+	// the multi-cursor block: line → display column of its extra cursor
+	multi := map[int]int{}
+	if m.ideEditing && m.ideMultiLo >= 0 {
+		for i, col := range m.ideMultiCols {
+			row := m.ideMultiLo + i
+			if row >= len(plain) {
+				continue
+			}
+			r := []rune(plain[row])
+			if col > len(r) {
+				col = len(r)
+			}
+			multi[row] = lipgloss.Width(string(r[:col]))
+		}
+	}
 	hits := map[int]bool{}
 	for _, hit := range m.ideFindHits {
 		hits[hit] = true
@@ -1310,14 +1346,19 @@ func (m Model) ideEditorRows(w, h int) []string {
 				mark = warnStyle.Render("▎")
 			}
 			g := dimStyle
+			_, onMulti := multi[i]
 			switch {
+			case selOn && i >= selLo && i <= selHi, onMulti:
+				g = cursorStyle // the selected or multi-cursor block bands the gutter
 			case i == curRow, i == b.cursor && !m.ideEditing && m.pane == paneIDE && m.ideFocus == ideFocusFile:
 				g = cursorStyle
 			case hits[i]:
 				g = okStyle
 			}
 			line := ansi.Cut(lines[i], hoff, hoff+avail)
-			if i == curRow && curRow < len(plain) {
+			if c, ok := multi[i]; ok && i < len(plain) {
+				line = overlayIDECursor(line, plain[i], c, hoff)
+			} else if i == curRow && curRow < len(plain) {
 				line = overlayIDECursor(line, plain[i], curCol, hoff)
 			}
 			row = mark + g.Render(fmt.Sprintf("%*d ", numW, i+1)) + line
@@ -1511,24 +1552,286 @@ func (m Model) openIDESearch(kind int) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) keyIDEEditing(k tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.ideMultiLo >= 0 {
+		return m.keyIDEMulti(k)
+	}
 	b := m.ideBuf()
 	switch k.String() {
 	case "esc":
+		if m.ideSelAnchor >= 0 {
+			m.ideSelAnchor = -1 // drop the selection first; esc again leaves
+			return m, nil
+		}
 		m.leaveIDEEditing()
 		return m, nil
 	case "ctrl+s":
 		return m, m.saveIDEBuf(false)
+	case "ctrl+e", "ctrl+shift+i":
+		// a cursor on every selected line's end — vscode's ctrl+shift+i.
+		// Most terminals hand ctrl+shift+i to us as tab (indent), so ctrl+e
+		// ("line ends") carries the binding; without a selection it stays the
+		// textarea's own jump-to-line-end.
+		if lo, hi, ok := m.ideSelSpan(); ok {
+			m.startIDEMulti(lo, hi)
+			return m, nil
+		}
+	case "shift+up", "shift+down":
+		// grow a line selection from the cursor; tab/shift+tab act on it
+		if m.ideSelAnchor < 0 {
+			m.ideSelAnchor = m.ideEditor.Line()
+		}
+		if k.String() == "shift+up" {
+			m.ideEditor.CursorUp()
+		} else {
+			m.ideEditor.CursorDown()
+		}
+		b.cursor = clampIdx(m.ideEditor.Line(), len(b.hl))
+		m.settleIDEView()
+		return m, nil
+	case "tab", "shift+tab":
+		before := b.val
+		lo, hi, sel := m.ideSelSpan()
+		switch {
+		case k.String() == "tab" && !sel:
+			// plain tab types indentation at the cursor, to the next tab stop
+			col := m.ideEditor.LineInfo().ColumnOffset
+			m.ideEditor.InsertString(strings.Repeat(" ", ideIndentUnit-col%ideIndentUnit))
+		case k.String() == "tab":
+			m.indentIDESpan(lo, hi, 1)
+		case !sel:
+			m.indentIDESpan(m.ideEditor.Line(), m.ideEditor.Line(), -1)
+		default:
+			m.indentIDESpan(lo, hi, -1)
+		}
+		m.finishIDEEdit(b, before)
+		return m, nil
+	case "enter":
+		// break the line the way vscode does: the new line inherits the
+		// indentation, one unit deeper after an opening bracket
+		indent := ""
+		if lines := strings.Split(b.val, "\n"); m.ideEditor.Line() < len(lines) {
+			indent = ideAutoIndent(lines[m.ideEditor.Line()], m.ideEditor.LineInfo().ColumnOffset)
+		}
+		m.ideSelAnchor = -1
+		before := b.val
+		var cmd tea.Cmd
+		m.ideEditor, cmd = m.ideEditor.Update(k)
+		if indent != "" {
+			m.ideEditor.InsertString(indent)
+		}
+		m.finishIDEEdit(b, before)
+		return m, cmd
 	}
+	m.ideSelAnchor = -1 // any other key works at the cursor, selection dropped
 	before := b.val
 	var cmd tea.Cmd
 	m.ideEditor, cmd = m.ideEditor.Update(k)
+	m.finishIDEEdit(b, before)
+	return m, cmd
+}
+
+// finishIDEEdit settles the buffer after a keystroke changed (or may have
+// changed) the editor: text stashed, colors redone under the live budget, the
+// cursor line tracked and kept in the window.
+func (m *Model) finishIDEEdit(b *ideBuf, before string) {
 	m.stashIDEBuf()
 	if b.val != before {
 		b.hl = liveHighlight(b.val, b.rel)
 	}
 	b.cursor = clampIdx(m.ideEditor.Line(), len(b.hl))
 	m.settleIDEView()
-	return m, cmd
+}
+
+// startIDEMulti turns a line selection into a multi-cursor block: one cursor
+// on the end of every selected line. Typing, backspace, delete, tab and ←/→
+// then work on all of them at once; anything else drops back to the single
+// cursor.
+func (m *Model) startIDEMulti(lo, hi int) {
+	m.ideSelAnchor = -1
+	lines := strings.Split(m.ideEditor.Value(), "\n")
+	m.ideMultiLo = lo
+	m.ideMultiCols = make([]int, 0, hi-lo+1)
+	for i := lo; i <= hi && i < len(lines); i++ {
+		m.ideMultiCols = append(m.ideMultiCols, len([]rune(lines[i])))
+	}
+	if len(m.ideMultiCols) == 0 {
+		m.ideMultiLo = -1
+		return
+	}
+	// the real cursor rides the block's last line, keeping it in the window
+	m.setIDECursorAt(lo+len(m.ideMultiCols)-1, m.ideMultiCols[len(m.ideMultiCols)-1])
+}
+
+func (m *Model) clearIDEMulti() {
+	m.ideMultiLo, m.ideMultiCols = -1, nil
+}
+
+// keyIDEMulti works the multi-cursor block: the same edit is applied at every
+// line's cursor. Paste folds to one line — the per-line cursors have no way to
+// share a multi-line insert.
+func (m Model) keyIDEMulti(k tea.KeyMsg) (tea.Model, tea.Cmd) {
+	b := m.ideBuf()
+	// apply runs one edit at every cursor and rebuilds the editor around it
+	apply := func(fn func(r []rune, col int) ([]rune, int)) {
+		before := b.val
+		lines := strings.Split(m.ideEditor.Value(), "\n")
+		for i, col := range m.ideMultiCols {
+			row := m.ideMultiLo + i
+			if row >= len(lines) {
+				continue
+			}
+			r := []rune(lines[row])
+			if col > len(r) {
+				col = len(r)
+			}
+			r, col = fn(r, col)
+			lines[row] = string(r)
+			m.ideMultiCols[i] = col
+		}
+		m.ideEditor.SetValue(strings.Join(lines, "\n"))
+		m.setIDECursorAt(m.ideMultiLo+len(m.ideMultiCols)-1, m.ideMultiCols[len(m.ideMultiCols)-1])
+		m.finishIDEEdit(b, before)
+	}
+	switch k.String() {
+	case "esc":
+		m.clearIDEMulti()
+		return m, nil
+	case "ctrl+s":
+		m.clearIDEMulti()
+		return m, m.saveIDEBuf(false)
+	case "backspace":
+		apply(func(r []rune, col int) ([]rune, int) {
+			if col == 0 {
+				return r, 0
+			}
+			return append(r[:col-1], r[col:]...), col - 1
+		})
+		return m, nil
+	case "delete":
+		apply(func(r []rune, col int) ([]rune, int) {
+			if col < len(r) {
+				r = append(r[:col], r[col+1:]...)
+			}
+			return r, col
+		})
+		return m, nil
+	case "left":
+		apply(func(r []rune, col int) ([]rune, int) { return r, max(col-1, 0) })
+		return m, nil
+	case "right":
+		apply(func(r []rune, col int) ([]rune, int) { return r, min(col+1, len(r)) })
+		return m, nil
+	case "home":
+		apply(func(r []rune, col int) ([]rune, int) { return r, 0 })
+		return m, nil
+	case "end":
+		apply(func(r []rune, col int) ([]rune, int) { return r, len(r) })
+		return m, nil
+	case "tab":
+		apply(func(r []rune, col int) ([]rune, int) {
+			pad := []rune(strings.Repeat(" ", ideIndentUnit-col%ideIndentUnit))
+			return append(r[:col:col], append(pad, r[col:]...)...), col + len(pad)
+		})
+		return m, nil
+	}
+	var ins []rune
+	switch {
+	case k.Type == tea.KeyRunes:
+		ins = k.Runes
+	case k.Type == tea.KeySpace:
+		ins = []rune{' '}
+	}
+	// newlines can't be split across the per-line cursors; a pasted block
+	// folds onto each line rather than shearing the block apart
+	ins = []rune(strings.ReplaceAll(ideSanitize(string(ins)), "\n", " "))
+	if len(ins) == 0 {
+		// any other key ends the block and lands on the single cursor
+		m.clearIDEMulti()
+		return m.keyIDEEditing(k)
+	}
+	apply(func(r []rune, col int) ([]rune, int) {
+		return append(r[:col:col], append(append([]rune{}, ins...), r[col:]...)...), col + len(ins)
+	})
+	return m, nil
+}
+
+// ideIndentUnit is the editor's indent step, matching the four spaces
+// ideSanitize flattens a tab into.
+const ideIndentUnit = 4
+
+// ideLineIndent counts a line's leading spaces.
+func ideLineIndent(s string) int {
+	n := 0
+	for n < len(s) && s[n] == ' ' {
+		n++
+	}
+	return n
+}
+
+// ideAutoIndent is the indentation a new line inherits when enter breaks a
+// line at col: the line's leading spaces — capped at the cursor, so a break
+// inside the indent doesn't double it — one unit deeper when the cursor sits
+// right after an opening bracket or a colon.
+func ideAutoIndent(line string, col int) string {
+	r := []rune(line)
+	if col > len(r) {
+		col = len(r)
+	}
+	n := ideLineIndent(line)
+	if n > col {
+		n = col
+	}
+	head := strings.TrimRight(string(r[:col]), " ")
+	if head != "" && strings.ContainsRune("{([:", rune(head[len(head)-1])) {
+		n += ideIndentUnit
+	}
+	return strings.Repeat(" ", n)
+}
+
+// ideSelSpan is the selected line range while shift+↑/↓ holds one open,
+// anchored at ideSelAnchor with the editor cursor as the moving end.
+func (m *Model) ideSelSpan() (lo, hi int, ok bool) {
+	if !m.ideEditing || m.ideSelAnchor < 0 {
+		return 0, 0, false
+	}
+	lo, hi = m.ideSelAnchor, m.ideEditor.Line()
+	if lo > hi {
+		lo, hi = hi, lo
+	}
+	return lo, hi, true
+}
+
+// indentIDESpan shifts the buffer lines lo..hi one indent unit right (dir>0)
+// or left, the way vscode's tab/shift+tab work on a selection: blank lines
+// stay put on an indent, an outdent takes what leading spaces are there, up
+// to the unit. The editor cursor keeps its place in the text it was on.
+func (m *Model) indentIDESpan(lo, hi, dir int) {
+	lines := strings.Split(m.ideEditor.Value(), "\n")
+	row := m.ideEditor.Line()
+	col := m.ideEditor.LineInfo().ColumnOffset
+	shift := 0
+	for i := lo; i <= hi && i < len(lines); i++ {
+		if dir > 0 {
+			if strings.TrimSpace(lines[i]) == "" {
+				continue
+			}
+			lines[i] = strings.Repeat(" ", ideIndentUnit) + lines[i]
+			if i == row {
+				shift = ideIndentUnit
+			}
+		} else {
+			n := ideLineIndent(lines[i])
+			if n > ideIndentUnit {
+				n = ideIndentUnit
+			}
+			lines[i] = lines[i][n:]
+			if i == row {
+				shift = -n
+			}
+		}
+	}
+	m.ideEditor.SetValue(strings.Join(lines, "\n"))
+	m.setIDECursorAt(row, col+shift)
 }
 
 // leaveIDEEditing drops out of the editor back to the read-only file view,
@@ -1539,9 +1842,13 @@ func (m *Model) leaveIDEEditing() {
 	b := m.ideBuf()
 	if b == nil {
 		m.ideEditing = false
+		m.ideSelAnchor = -1
+		m.clearIDEMulti()
 		return
 	}
 	m.ideEditing = false
+	m.ideSelAnchor = -1
+	m.clearIDEMulti()
 	m.ideEditor.Blur()
 	m.stashIDEBuf()
 	b.hl = highlightSource(b.val, b.rel)

@@ -227,7 +227,7 @@ func (m Model) viewMain() string {
 		case paneIDE:
 			switch {
 			case m.ideEditing:
-				bindings = []key.Binding{keyIDESave, keyIDEView, keyTermEsc}
+				bindings = []key.Binding{keyIDESave, keyIDESelect, keyIDEIndent, keyIDEMulti, keyIDEView, keyTermEsc}
 			case m.ideInputKind != ideInputNone:
 				bindings = []key.Binding{keyApply, keyCancel}
 			case m.ideFocus == ideFocusFile:

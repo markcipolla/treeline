@@ -1147,3 +1147,122 @@ func TestIDESelectionBandFillsTheColumn(t *testing.T) {
 			got, treeW-1)
 	}
 }
+
+// ideEditLines is the editor's buffer as lines, for the editing tests.
+func ideEditLines(m Model) []string { return strings.Split(m.ideEditor.Value(), "\n") }
+
+// TestIDEEnterAutoIndents: breaking a line carries its indentation onto the
+// new line, one unit deeper when the break lands after an opening bracket.
+func TestIDEEnterAutoIndents(t *testing.T) {
+	m := ideTestModel(t, 200)
+	writeIDEFile(t, m.wts[0].Path, "ind.txt", "if x {\n    body\n}\n")
+	m.openIDEFile("ind.txt")
+	m = keyIDE(t, m, runes("e"))
+
+	m.setIDECursorAt(0, 6) // end of "if x {"
+	m = keyIDE(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if got := ideEditLines(m); got[1] != "    " || got[2] != "    body" {
+		t.Fatalf("break after { should indent one unit, got %q", got)
+	}
+	if m.ideEditor.Line() != 1 || m.ideEditor.LineInfo().ColumnOffset != 4 {
+		t.Errorf("cursor should sit at the end of the new indent, got line %d col %d",
+			m.ideEditor.Line(), m.ideEditor.LineInfo().ColumnOffset)
+	}
+
+	m.setIDECursorAt(2, 8) // end of "    body": plain keep-indent
+	m = keyIDE(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if got := ideEditLines(m); got[3] != "    " {
+		t.Errorf("break after body should keep the four-space indent, got %q", got[3])
+	}
+}
+
+// TestIDETabIndentsSelection: shift+down grows a line selection; tab shifts
+// the block right one unit, shift+tab walks it back and stops at column zero.
+func TestIDETabIndentsSelection(t *testing.T) {
+	m := ideTestModel(t, 200)
+	writeIDEFile(t, m.wts[0].Path, "ind.txt", "if x {\n    body\n}\n")
+	m.openIDEFile("ind.txt")
+	m = keyIDE(t, m, runes("e"))
+
+	m = keyIDE(t, m, tea.KeyMsg{Type: tea.KeyShiftDown}) // lines 0-1
+	if m.ideSelAnchor != 0 || m.ideEditor.Line() != 1 {
+		t.Fatalf("shift+down should anchor at 0 and move to 1, got anchor %d line %d",
+			m.ideSelAnchor, m.ideEditor.Line())
+	}
+
+	m = keyIDE(t, m, tea.KeyMsg{Type: tea.KeyTab})
+	if got := ideEditLines(m); got[0] != "    if x {" || got[1] != "        body" || got[2] != "}" {
+		t.Fatalf("tab should indent only the selected lines, got %q", got)
+	}
+	if m.ideSelAnchor != 0 {
+		t.Error("indenting should keep the selection")
+	}
+	if !m.ideBuf().dirty {
+		t.Error("indenting should mark the buffer dirty")
+	}
+
+	m = keyIDE(t, m, tea.KeyMsg{Type: tea.KeyShiftTab})
+	m = keyIDE(t, m, tea.KeyMsg{Type: tea.KeyShiftTab})
+	if got := ideEditLines(m); got[0] != "if x {" || got[1] != "body" {
+		t.Fatalf("shift+tab should outdent to column zero and stop, got %q", got)
+	}
+
+	m = keyIDE(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.ideSelAnchor != -1 || !m.ideEditing {
+		t.Error("first esc should only drop the selection")
+	}
+	m = keyIDE(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.ideEditing {
+		t.Error("second esc should leave editing")
+	}
+}
+
+// TestIDETabAtCursor: with no selection tab types spaces to the next stop.
+func TestIDETabAtCursor(t *testing.T) {
+	m := ideTestModel(t, 200)
+	writeIDEFile(t, m.wts[0].Path, "ind.txt", "ab\n")
+	m.openIDEFile("ind.txt")
+	m = keyIDE(t, m, runes("e"))
+
+	m.setIDECursorAt(0, 2)
+	m = keyIDE(t, m, tea.KeyMsg{Type: tea.KeyTab})
+	if got := ideEditLines(m); got[0] != "ab  " {
+		t.Fatalf("tab at col 2 should pad to the next stop, got %q", got[0])
+	}
+	if m.ideEditor.LineInfo().ColumnOffset != 4 {
+		t.Errorf("cursor should land on the stop, got col %d", m.ideEditor.LineInfo().ColumnOffset)
+	}
+}
+
+// TestIDEMultiCursor: ctrl+e on a selection puts a cursor on every line's
+// end; typing and backspace hit all of them, esc drops back to one cursor.
+func TestIDEMultiCursor(t *testing.T) {
+	m := ideTestModel(t, 200)
+	writeIDEFile(t, m.wts[0].Path, "multi.txt", "aa\nbbbb\ncc\n")
+	m.openIDEFile("multi.txt")
+	m = keyIDE(t, m, runes("e"))
+
+	m = keyIDE(t, m, tea.KeyMsg{Type: tea.KeyShiftDown})
+	m = keyIDE(t, m, tea.KeyMsg{Type: tea.KeyShiftDown}) // lines 0-2
+	m = keyIDE(t, m, tea.KeyMsg{Type: tea.KeyCtrlE})
+	if m.ideMultiLo != 0 || len(m.ideMultiCols) != 3 || m.ideSelAnchor != -1 {
+		t.Fatalf("ctrl+e should open a 3-cursor block, got lo %d cols %v anchor %d",
+			m.ideMultiLo, m.ideMultiCols, m.ideSelAnchor)
+	}
+
+	m = typeIDE(t, m, ",")
+	if got := ideEditLines(m); got[0] != "aa," || got[1] != "bbbb," || got[2] != "cc," {
+		t.Fatalf("typing should land on every line end, got %q", got)
+	}
+
+	m = keyIDE(t, m, tea.KeyMsg{Type: tea.KeyBackspace})
+	m = keyIDE(t, m, tea.KeyMsg{Type: tea.KeyBackspace})
+	if got := ideEditLines(m); got[0] != "a" || got[1] != "bbb" || got[2] != "c" {
+		t.Fatalf("backspace should trim every line, got %q", got)
+	}
+
+	m = keyIDE(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.ideMultiLo != -1 || !m.ideEditing {
+		t.Error("esc should drop the cursors and stay editing")
+	}
+}
