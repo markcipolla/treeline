@@ -83,7 +83,9 @@ type gitStatusMsg struct {
 
 type gitLogMsg struct {
 	dir     string
+	rows    []gitx.LogRow
 	commits []gitx.Commit
+	baseRef string
 	err     error
 }
 
@@ -217,8 +219,8 @@ func loadGitStatusCmd(dir string) tea.Cmd {
 
 func loadGitLogCmd(dir string) tea.Cmd {
 	return func() tea.Msg {
-		commits, err := gitx.Log(dir, 100)
-		return gitLogMsg{dir: dir, commits: commits, err: err}
+		g, err := gitx.Log(dir, 100)
+		return gitLogMsg{dir: dir, rows: g.Rows, commits: g.Commits, baseRef: g.BaseRef, err: err}
 	}
 }
 
@@ -271,14 +273,16 @@ func (m Model) gitFilesLayout(w, h int) (listH, lw int) {
 
 // gitLogLayout is log-mode geometry: the height of the commit list above the
 // rule, with the selected commit's message and patch below it. The renderer
-// and the wheel handler both need it to tell the two regions apart.
+// and the wheel handler both need it to tell the two regions apart. The list
+// is counted in display rows — graph rails and the branch-start divider take
+// rows of their own.
 func (m Model) gitLogLayout(h int) int {
 	listH := h / 2
 	if listH < 3 {
 		listH = 3
 	}
-	if listH > len(m.commits) {
-		listH = len(m.commits)
+	if listH > len(m.logRows) {
+		listH = len(m.logRows)
 	}
 	return listH
 }
@@ -442,6 +446,53 @@ func (m Model) commitDetail() string {
 	return b.String()
 }
 
+// logRowLine renders one row of the graph log: rails in the border style, the
+// branch-start divider as a labelled rule, and commit rows — hash, ref
+// decorations, subject — marked as click zones. Every row starts with the
+// two-column cursor gutter so the rails stay aligned.
+func (m Model) logRowLine(row gitx.LogRow, w int) string {
+	if row.Divider {
+		rule := "─┤ branch starts here · " + m.logBaseRef + " ├"
+		if pad := w - 2 - len([]rune(rule)); pad > 0 {
+			rule += strings.Repeat("─", pad)
+		}
+		return "  " + metaStyle.Render(truncate(rule, w-2))
+	}
+	if row.Commit < 0 {
+		return "  " + metaStyle.Render(truncate(row.Graph, w-2))
+	}
+	c := m.commits[row.Commit]
+	graph := metaStyle.Render(row.Graph)
+	avail := w - 2 - len([]rune(row.Graph))
+	refs := ""
+	if c.Refs != "" {
+		refs = " (" + c.Refs + ")"
+	}
+	head := truncate(c.Short+refs, avail)
+	subj := truncate(" "+c.Subject, avail-len([]rune(head)))
+	var line string
+	switch {
+	case row.Commit == m.commitSel:
+		line = cursorStyle.Render("❯ ") + graph + okStyle.Render(head+subj)
+	case strings.HasPrefix(head, c.Short):
+		// decorations get git's amber, even when truncation clipped them
+		line = "  " + graph + c.Short + warnStyle.Render(head[len(c.Short):]) + subj
+	default:
+		line = "  " + graph + head + subj
+	}
+	return m.zones.Mark(gitCommitZoneID(row.Commit), line)
+}
+
+// commitRowIdx is the display row carrying commit i, 0 when it isn't shown.
+func (m Model) commitRowIdx(i int) int {
+	for r, row := range m.logRows {
+		if row.Commit == i {
+			return r
+		}
+	}
+	return 0
+}
+
 // revealCommitSel scrolls the log just far enough to show the selected
 // commit, leaving the wheel free to scroll away from it.
 func (m *Model) revealCommitSel() {
@@ -450,13 +501,14 @@ func (m *Model) revealCommitSel() {
 	if rows < 1 {
 		return
 	}
-	if m.commitSel < m.commitScroll {
-		m.commitScroll = m.commitSel
+	sel := m.commitRowIdx(m.commitSel)
+	if sel < m.commitScroll {
+		m.commitScroll = sel
 	}
-	if m.commitSel >= m.commitScroll+rows {
-		m.commitScroll = m.commitSel - rows + 1
+	if sel >= m.commitScroll+rows {
+		m.commitScroll = sel - rows + 1
 	}
-	m.commitScroll = clampScroll(m.commitScroll, len(m.commits), rows)
+	m.commitScroll = clampScroll(m.commitScroll, len(m.logRows), rows)
 }
 
 // scrollCommitDiff moves the message-and-patch block under the log, leaving
@@ -875,16 +927,9 @@ func (m Model) gitModeContent(w, h int) (string, string) {
 		}
 		listH := m.gitLogLayout(h)
 		var b strings.Builder
-		start := clampScroll(m.commitScroll, len(m.commits), listH)
-		for i := start; i < len(m.commits) && i < start+listH; i++ {
-			c := m.commits[i]
-			line := c.Short + " " + c.Subject
-			if i == m.commitSel {
-				line = cursorStyle.Render("❯ ") + okStyle.Render(truncate(line, w-2))
-			} else {
-				line = "  " + truncate(line, w-2)
-			}
-			b.WriteString(m.zones.Mark(gitCommitZoneID(i), line) + "\n")
+		start := clampScroll(m.commitScroll, len(m.logRows), listH)
+		for i := start; i < len(m.logRows) && i < start+listH; i++ {
+			b.WriteString(m.logRowLine(m.logRows[i], w) + "\n")
 		}
 		b.WriteString(metaStyle.Render(strings.Repeat("─", w)) + "\n")
 		// the message and the patch scroll together under the log
