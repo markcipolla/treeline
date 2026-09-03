@@ -218,6 +218,20 @@ myrepo/
 New branches start from `origin`'s default branch when it's known, otherwise
 `HEAD`. If the branch already exists it's checked out as-is.
 
+## tide — the ide pane, standalone
+
+The ide pane also ships as its own command. `scripts/install` puts it on PATH
+beside treeline (or `go install ./cmd/tide`):
+
+```
+tide             # open the editor on the current directory
+tide path/to/dir
+```
+
+Same keys, same look: the file tree, tabs, editing with auto-indent and
+multi-cursor, ctrl+f / ctrl+g search, git gutters. ctrl+q quits — twice when
+edits are unsaved.
+
 ## Background sessions
 
 The claude and shell panes keep running after you quit. Where tmux is

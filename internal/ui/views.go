@@ -14,6 +14,7 @@ import (
 
 	"github.com/markcipolla/treeline/internal/branch"
 	"github.com/markcipolla/treeline/internal/gitx"
+	"github.com/markcipolla/treeline/internal/ide"
 	"github.com/markcipolla/treeline/internal/linear"
 )
 
@@ -226,11 +227,11 @@ func (m Model) viewMain() string {
 			bindings = []key.Binding{keyTermTabs, keyTermEsc}
 		case paneIDE:
 			switch {
-			case m.ideEditing:
-				bindings = []key.Binding{keyIDESave, keyIDEView, keyTermEsc}
-			case m.ideInputKind != ideInputNone:
+			case m.ide.Editing():
+				bindings = []key.Binding{keyIDESave, keyIDESelect, keyIDEIndent, keyIDEMulti, keyIDEView, keyTermEsc}
+			case m.ide.InputActive():
 				bindings = []key.Binding{keyApply, keyCancel}
-			case m.ideFocus == ideFocusFile:
+			case m.ide.FileFocused():
 				bindings = []key.Binding{keyIDEEdit, keyIDESave, keyIDEFind, keyIDETabs, keyIDEClose, keyIDETree}
 			default:
 				bindings = []key.Binding{keyIDEOpen, keyIDEFilter, keyIDENew, keyIDERename, keyIDEDel}
@@ -311,7 +312,7 @@ func (m Model) viewPanels() string {
 		m.workPart(l.claude, m.pane == paneClaude, claudeTitle, claudeBody))
 
 	var ide panePart
-	if noWT && !m.ideAnyDirty() {
+	if noWT && !m.ide.AnyDirty() {
 		ide = m.workPart(l.ide, m.pane == paneIDE, "ide", dimStyle.Render(m.noWorktreeHint()))
 	} else {
 		ide = m.idePart(l.ide, m.pane == paneIDE)
@@ -391,9 +392,11 @@ func (m Model) viewPanels() string {
 // and ┴ into the bottom border — so the divider runs the pane's full height
 // instead of hanging between them.
 func (m Model) idePart(b box, focused bool) panePart {
-	title, body := m.idePaneContent(b.w-4, b.h-4)
+	m.ide.SetFocused(focused)
+	m.ide.SetSize(b.w-4, b.h-4)
+	title, body := m.ide.Content(b.w-4, b.h-4)
 	p := m.workPart(b, focused, title, body)
-	dx := m.ideTreeWidth(b.w-4) + 2 // the │ in " │ ", past the body's pad column
+	dx := ide.TreeWidth(b.w-4) + 2 // the │ in " │ ", past the body's pad column
 	if len(p.rows) > 1 && dx > 0 && dx < p.w-1 {
 		rs := metaStyle
 		if focused {
@@ -762,18 +765,6 @@ func (m Model) renderSearchResults() string {
 		b.WriteString(dimStyle.Render(fmt.Sprintf("  … %d more", more)) + "\n")
 	}
 	return b.String()
-}
-
-// truncate shortens s to at most w runes, ending with an ellipsis.
-func truncate(s string, w int) string {
-	if w <= 0 {
-		return ""
-	}
-	r := []rune(s)
-	if len(r) <= w {
-		return s
-	}
-	return string(r[:w-1]) + "…"
 }
 
 // ansiRE strips SGR color sequences so rendered lines can be matched on text.

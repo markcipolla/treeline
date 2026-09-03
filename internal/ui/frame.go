@@ -2,8 +2,6 @@ package ui
 
 import (
 	"strings"
-
-	"github.com/charmbracelet/lipgloss"
 )
 
 // The panel layout is composed from closed boxes: every pane draws its own
@@ -198,16 +196,4 @@ func fitRows(s string, w, h int) []string {
 		out[i] = strings.Repeat(" ", w)
 	}
 	return out
-}
-
-// padTo pads or truncates a styled line to exactly w printable columns.
-func padTo(s string, w int) string {
-	if w <= 0 {
-		return ""
-	}
-	n := lipgloss.Width(s)
-	if n > w {
-		return maxWidthStyle(w).Render(s)
-	}
-	return s + strings.Repeat(" ", w-n)
 }

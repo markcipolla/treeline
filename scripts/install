@@ -25,6 +25,8 @@ fi
 mkdir -p "$dest"
 "$go_bin" build -C "$src" -o "$dest/treeline" .
 echo "installed $dest/treeline ($("$dest/treeline" version))"
+"$go_bin" build -C "$src" -o "$dest/tide" ./cmd/tide
+echo "installed $dest/tide ($("$dest/tide" version))"
 
 case ":$PATH:" in
   *":$dest:"*) ;;
