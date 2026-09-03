@@ -211,7 +211,7 @@ func KillDir(dir string) {
 		}
 		return
 	}
-	for _, kind := range []string{"claude", "shell", "setup"} {
+	for _, kind := range []string{"balance", "claude", "shell", "setup"} {
 		_ = Kill(Name(kind, dir))
 	}
 }
