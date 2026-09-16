@@ -345,6 +345,7 @@ func CommitStaged(dir, subject, body string) error {
 
 // Commit is one entry of the log.
 type Commit struct {
+	Hash    string // full hash; the rails are laid out from it
 	Short   string
 	Author  string
 	When    string // relative, e.g. "2 hours ago"
@@ -362,79 +363,44 @@ type LogRow struct {
 	Divider bool
 }
 
-// GraphLog is git log --all --graph with the rails redrawn in the
-// box-drawing set panel borders use.
+// GraphLog is the log across all refs with rails drawn in the box-drawing
+// set panel borders use.
 type GraphLog struct {
 	Rows    []LogRow
 	Commits []Commit // in display order, newest first
 	BaseRef string   // ref the divider marks; "" when there is no divider
 }
 
-// prettyRail redraws git's ASCII graph rails with box-drawing characters.
-func prettyRail(s string) string {
-	return strings.Map(func(r rune) rune {
-		switch r {
-		case '*':
-			return '●'
-		case '|':
-			return '│'
-		case '/':
-			return '╱'
-		case '\\':
-			return '╲'
-		case '_', '-':
-			return '─'
-		case '.':
-			return '·'
-		}
-		return r
-	}, s)
-}
-
 // Log returns up to n commits across all refs, newest first, each with its
-// slice of the graph. The graph pass yields only rails and hashes — one line
-// per commit — and a second pass fills in the details, so multi-line bodies
-// never tangle with the rail drawing.
+// slice of the graph. Commits come out in topological order — no parent
+// ahead of its children — which is what lets the rails be laid out in one
+// pass over the parentage.
 func Log(dir string, n int) (GraphLog, error) {
 	var g GraphLog
-	max := fmt.Sprintf("--max-count=%d", n)
-	graph, err := run(dir, "log", "--all", "--graph", "--no-color", max, "--format=%x1f%h")
+	out, err := run(dir, "log", "--all", "--topo-order", fmt.Sprintf("--max-count=%d", n),
+		"--format=%H%x1f%h%x1f%P%x1f%an%x1f%ar%x1f%D%x1f%s%x1f%b%x1e")
 	if err != nil {
 		return g, err
 	}
-	if graph == "" {
-		return g, nil
-	}
-	details, err := run(dir, "log", "--all", max,
-		"--format=%h%x1f%an%x1f%ar%x1f%D%x1f%s%x1f%b%x1e")
-	if err != nil {
-		return g, err
-	}
-	byHash := map[string]Commit{}
-	for _, rec := range strings.Split(details, "\x1e") {
-		rec = strings.TrimSpace(rec)
-		if rec == "" {
+	var b railBuilder
+	// the lane HEAD descends through is the graph's spine, drawn double
+	b.trunk, _ = run(dir, "rev-parse", "HEAD")
+	for _, rec := range strings.Split(out, "\x1e") {
+		rec = strings.TrimLeft(rec, "\n")
+		if strings.TrimSpace(rec) == "" {
 			continue
 		}
-		f := strings.SplitN(rec, "\x1f", 6)
-		if len(f) < 5 {
+		f := strings.SplitN(rec, "\x1f", 8)
+		if len(f) < 7 {
 			continue
 		}
-		c := Commit{Short: f[0], Author: f[1], When: f[2], Refs: f[3], Subject: f[4]}
-		if len(f) == 6 {
-			c.Body = strings.TrimSpace(f[5])
+		c := Commit{Hash: f[0], Short: f[1], Author: f[3], When: f[4], Refs: f[5], Subject: f[6]}
+		if len(f) == 8 {
+			c.Body = strings.TrimSpace(f[7])
 		}
-		byHash[c.Short] = c
+		b.add(c, strings.Fields(f[2]))
 	}
-	for _, line := range strings.Split(graph, "\n") {
-		rail, hash, isCommit := strings.Cut(line, "\x1f")
-		row := LogRow{Graph: prettyRail(rail), Commit: -1}
-		if c, ok := byHash[hash]; isCommit && ok {
-			g.Commits = append(g.Commits, c)
-			row.Commit = len(g.Commits) - 1
-		}
-		g.Rows = append(g.Rows, row)
-	}
+	g.Rows, g.Commits = b.rows, b.commits
 	g.markBranchStart(dir)
 	return g, nil
 }

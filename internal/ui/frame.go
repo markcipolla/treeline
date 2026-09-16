@@ -2,6 +2,8 @@ package ui
 
 import (
 	"strings"
+
+	"github.com/markcipolla/treeline/internal/tui"
 )
 
 // The panel layout is composed from closed boxes: every pane draws its own
@@ -135,34 +137,18 @@ func borderFill(left, right rune, joins []int, up bool, w int) string {
 	return sb.String()
 }
 
-// boxGlyph is the box-drawing character for the lines meeting at a junction.
-// The outer corners come out rounded, matching the modals' borders.
+// boxGlyph is the box-drawing character for the lines meeting at a
+// junction, from the same table the graph rails are drawn with, so the two
+// read as one set of lines. The outer corners come out rounded.
 func boxGlyph(up, down, left, right bool) rune {
-	switch {
-	case up && down && left && right:
-		return '┼'
-	case up && down && right:
-		return '├'
-	case up && down && left:
-		return '┤'
-	case up && down:
-		return '│'
-	case down && left && right:
-		return '┬'
-	case up && left && right:
-		return '┴'
-	case down && right:
-		return '╭'
-	case down && left:
-		return '╮'
-	case up && right:
-		return '╰'
-	case up && left:
-		return '╯'
-	case left || right:
-		return '─'
+	return tui.BoxGlyph(line(up), line(down), line(left), line(right))
+}
+
+func line(on bool) tui.Line {
+	if on {
+		return tui.Light
 	}
-	return ' '
+	return tui.NoLine
 }
 
 // sideGlyphs are the border characters beside a pane row: a plain edge for
@@ -170,12 +156,13 @@ func boxGlyph(up, down, left, right bool) rune {
 // part of the box rather than stopping short of it.
 func sideGlyphs(k edgeKind) (left, right rune) {
 	switch k {
-	case edgeRule:
-		return '╞', '╡'
+	case edgeRule: // the title rule is a double line: ╞ ═══ ╡
+		return tui.BoxGlyph(tui.Light, tui.Light, tui.NoLine, tui.Double),
+			tui.BoxGlyph(tui.Light, tui.Light, tui.Double, tui.NoLine)
 	case edgeCross:
-		return '├', '┤'
+		return boxGlyph(true, true, false, true), boxGlyph(true, true, true, false)
 	}
-	return '│', '│'
+	return boxGlyph(true, true, false, false), boxGlyph(true, true, false, false)
 }
 
 // fitRows chops and pads a rendered block to exactly h rows of w columns. The
