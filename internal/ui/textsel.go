@@ -3,6 +3,7 @@ package ui
 import (
 	"regexp"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/mattn/go-runewidth"
@@ -16,7 +17,11 @@ type textSel struct {
 	on    bool // drag in progress
 	moved bool // the pointer travelled, so this is a selection and not a click
 	shown bool // highlight persists after release until something clears it
+	word  bool // started as a double click, so it can't shrink below the word
 	a, b  selPoint
+	// wordA and wordB are the double-clicked word, the anchor a later drag
+	// grows from in either direction.
+	wordA, wordB selPoint
 }
 
 func (t *textSel) press(col, line int) {
@@ -30,6 +35,18 @@ func (t *textSel) drag(col, line int) {
 		return
 	}
 	p := selPoint{line: line, col: col}
+	if t.word {
+		// a drag that began on a word keeps the whole word: it grows from
+		// whichever end of it the pointer left
+		if p.before(t.wordA) {
+			t.a, t.b = t.wordB, p
+		} else if t.wordB.before(p) {
+			t.a, t.b = t.wordA, p
+		} else {
+			t.a, t.b = t.wordA, t.wordB
+		}
+		return
+	}
 	if p != t.b {
 		t.moved = true
 	}
@@ -208,4 +225,85 @@ func runeCols(r rune) int {
 		return w
 	}
 	return 1
+}
+
+// ---- double click ----
+
+// A double click takes the word under the pointer. Words are the runs a
+// reader would call one: letters, digits and underscores, plus the hyphens,
+// dots and slashes that join them into paths, flags and qualified names.
+// Those joiners only count between two word runes, so the leading +/- of a
+// diff line, or a sentence's final full stop, stay out of the selection.
+func isWordRune(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_'
+}
+
+func isJoinRune(r rune) bool { return r == '-' || r == '.' || r == '/' }
+
+// wordAtCol finds the word under a visible column of a line and returns its
+// span as a half-open range of columns. It reports false when the column
+// holds no word — whitespace or lone punctuation — so the caller can treat
+// the double click as an ordinary click instead.
+func wordAtCol(s string, col int) (from, to int, ok bool) {
+	rs := []rune(s)
+	starts := make([]int, len(rs))
+	c := 0
+	for i, r := range rs {
+		starts[i] = c
+		c += runeCols(r)
+	}
+	i := -1
+	for k, r := range rs {
+		if col >= starts[k] && col < starts[k]+runeCols(r) {
+			i = k
+			break
+		}
+	}
+	if i < 0 {
+		return 0, 0, false
+	}
+	inner := isJoinRune(rs[i]) && i > 0 && i+1 < len(rs) &&
+		isWordRune(rs[i-1]) && isWordRune(rs[i+1])
+	if !isWordRune(rs[i]) && !inner {
+		return 0, 0, false
+	}
+	lo, hi := i, i
+	for lo > 0 {
+		if isWordRune(rs[lo-1]) {
+			lo--
+			continue
+		}
+		if isJoinRune(rs[lo-1]) && lo >= 2 && isWordRune(rs[lo-2]) {
+			lo -= 2
+			continue
+		}
+		break
+	}
+	for hi < len(rs)-1 {
+		if isWordRune(rs[hi+1]) {
+			hi++
+			continue
+		}
+		if isJoinRune(rs[hi+1]) && hi+2 < len(rs) && isWordRune(rs[hi+2]) {
+			hi += 2
+			continue
+		}
+		break
+	}
+	return starts[lo], starts[hi] + runeCols(rs[hi]), true
+}
+
+// before orders two points in reading order.
+func (p selPoint) before(q selPoint) bool {
+	return p.line < q.line || (p.line == q.line && p.col < q.col)
+}
+
+// pressWord starts a selection already covering one word, as a double click
+// does. The button is still down, so it stays a drag: carrying on from here
+// extends the selection, and releasing copies it like any other.
+func (t *textSel) pressWord(line, from, to int) {
+	t.a = selPoint{line: line, col: from}
+	t.b = selPoint{line: line, col: to - 1}
+	t.wordA, t.wordB = t.a, t.b
+	t.on, t.moved, t.shown, t.word = true, true, true, true
 }

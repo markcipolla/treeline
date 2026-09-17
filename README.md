@@ -199,8 +199,11 @@ its first parent.
 
 Drag with the mouse to select text anywhere in the pane — diff lines, file
 names, log entries — and releasing copies it to the clipboard, the same as
-in the claude and shell panes. A plain click still selects a file, or a
-commit in the log.
+in the claude and shell panes. Double-click a word to select and copy that
+word on its own; paths, flags and qualified names (`internal/ui/term.go`,
+`--dry-run`) come out whole, without the `+`/`-` a diff line starts with,
+and dragging on from the double click extends the selection. A plain click
+still selects a file, or a commit in the log.
 
 ### Where worktrees live
 

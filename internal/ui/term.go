@@ -52,8 +52,12 @@ type claudeSession struct {
 	selOn    bool // drag in progress
 	selMoved bool
 	selShown bool // highlight persists after release until cleared
+	selWord  bool // started as a double click, so it can't shrink below the word
 	selA     selPoint
 	selB     selPoint
+	// the double-clicked word, the anchor a later drag grows from
+	selWordA selPoint
+	selWordB selPoint
 }
 
 // selPoint addresses a cell across scrollback + live screen.
@@ -311,6 +315,25 @@ func (s *claudeSession) selPress(x, y int) {
 	s.selA = s.absAt(x, y)
 	s.selB = s.selA
 	s.selOn, s.selMoved, s.selShown = true, false, true
+	s.selWord = false
+}
+
+// selPressWord selects the word under a double click. It reports false when
+// the cell holds no word — whitespace or lone punctuation — so the caller can
+// fall back to starting an ordinary drag.
+func (s *claudeSession) selPressWord(x, y int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p := s.absAt(x, y)
+	from, to, ok := wordAtCol(s.lineTextAbsLocked(p.line), p.col)
+	if !ok {
+		return false
+	}
+	s.selA = selPoint{line: p.line, col: from}
+	s.selB = selPoint{line: p.line, col: to - 1}
+	s.selWordA, s.selWordB = s.selA, s.selB
+	s.selOn, s.selMoved, s.selShown, s.selWord = true, true, true, true
+	return true
 }
 
 func (s *claudeSession) selDrag(x, y int) {
@@ -320,6 +343,19 @@ func (s *claudeSession) selDrag(x, y int) {
 		return
 	}
 	p := s.absAt(x, y)
+	if s.selWord {
+		// a drag that began on a word keeps the whole word: it grows from
+		// whichever end of it the pointer left
+		switch {
+		case p.before(s.selWordA):
+			s.selA, s.selB = s.selWordB, p
+		case s.selWordB.before(p):
+			s.selA, s.selB = s.selWordA, p
+		default:
+			s.selA, s.selB = s.selWordA, s.selWordB
+		}
+		return
+	}
 	if p != s.selB {
 		s.selMoved = true
 	}
@@ -347,7 +383,7 @@ func (s *claudeSession) selecting() bool {
 
 func (s *claudeSession) clearSel() {
 	s.mu.Lock()
-	s.selOn, s.selMoved, s.selShown = false, false, false
+	s.selOn, s.selMoved, s.selShown, s.selWord = false, false, false, false
 	s.mu.Unlock()
 }
 
@@ -416,8 +452,9 @@ func (s *claudeSession) selectedTextLocked() string {
 	return strings.Join(lines, "\n")
 }
 
-// copyToClipboard puts text on the system clipboard.
-func copyToClipboard(text string) error {
+// copyToClipboard puts text on the system clipboard. It is swappable so
+// tests don't reach for the real one.
+var copyToClipboard = func(text string) error {
 	var cmd *exec.Cmd
 	switch {
 	case runtime.GOOS == "darwin":
