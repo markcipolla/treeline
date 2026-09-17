@@ -62,4 +62,7 @@ var (
 	clampW        = tui.ClampW
 	clampIdx      = tui.ClampIdx
 	maxWidthStyle = tui.MaxWidth
+
+	// graphStyle is the colour one branch of the git graph is drawn in
+	graphStyle = tui.GraphStyle
 )
