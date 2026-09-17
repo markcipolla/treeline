@@ -166,6 +166,12 @@ type Model struct {
 	gitFreshAt  time.Time // last auto-refresh; throttles claude-driven reloads
 	copiedUntil time.Time // "copied" flash after a drag selection
 	copiedFrom  int       // and the pane it came from
+	// the last left press, to spot the second click of a double click, and
+	// whether the press being handled right now is one
+	lastPress   time.Time
+	lastPressX  int
+	lastPressY  int
+	dblClick    bool
 	gitMode     int
 	gitUnstaged []gitx.FileStatus
 	gitStaged   []gitx.FileStatus
@@ -2673,6 +2679,9 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.MouseButtonLeft, tea.MouseButtonNone:
+		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+			m.dblClick = m.registerPress(msg)
+		}
 		// a press on the seam between two panes grabs it: dragging trades
 		// width between them, per layout, until the button lets go
 		if m.screen == scrMain && m.threePane() {
@@ -2715,7 +2724,11 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				case tea.MouseActionPress:
 					if msg.Button == tea.MouseButtonLeft && inPane {
 						x, y := z.Pos(msg)
-						s.selPress(x-1, y-top) // the zone starts inside: body pad, title+rule
+						// the zone starts inside: body pad, title+rule
+						if m.dblClick && s.selPressWord(x-1, y-top) {
+							return m, nil
+						}
+						s.selPress(x-1, y-top)
 						return m, nil
 					}
 					s.clearSel()
@@ -2973,6 +2986,9 @@ func (m *Model) selectGitText(msg tea.MouseMsg) (bool, tea.Cmd) {
 			return false, nil
 		}
 		col, line := m.gitBodyPos(msg)
+		if m.dblClick && m.pressGitWord(col, line) {
+			return true, nil
+		}
 		m.gitSel.press(col, line)
 		return true, nil
 	case tea.MouseActionMotion:
@@ -3006,6 +3022,46 @@ func (m *Model) selectGitText(msg tea.MouseMsg) (bool, tea.Cmd) {
 		return true, nil
 	}
 	return false, nil
+}
+
+// pressGitWord selects the word under a double click in the git pane. It
+// reports false when there is no word there, leaving the press to start an
+// ordinary drag instead.
+func (m *Model) pressGitWord(col, line int) bool {
+	if col < 0 || line < 0 {
+		return false
+	}
+	w, h := m.gitPaneSize()
+	_, body := m.gitPaneContent(w, h)
+	lines := strings.Split(body, "\n")
+	if line >= len(lines) {
+		return false
+	}
+	plain := invisibleRE.ReplaceAllString(lines[line], "")
+	from, to, ok := wordAtCol(plain, col)
+	if !ok {
+		return false
+	}
+	m.gitSel.pressWord(line, from, to)
+	return true
+}
+
+// doubleClickWindow is how long after a press a second one on the same cell
+// still counts as a double click.
+const doubleClickWindow = 400 * time.Millisecond
+
+// registerPress records a left press and reports whether it completes a
+// double click: a second press on the same cell, soon enough after the first.
+func (m *Model) registerPress(msg tea.MouseMsg) bool {
+	now := time.Now()
+	dbl := !m.lastPress.IsZero() && now.Sub(m.lastPress) <= doubleClickWindow &&
+		msg.X == m.lastPressX && msg.Y == m.lastPressY
+	if dbl {
+		m.lastPress = time.Time{} // a third click starts a fresh count
+	} else {
+		m.lastPress, m.lastPressX, m.lastPressY = now, msg.X, msg.Y
+	}
+	return dbl
 }
 
 // clickTermTab handles a click on the shell pane's tab row: it switches to
