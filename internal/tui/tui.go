@@ -36,6 +36,36 @@ var (
 	SearchHitStyle = lipgloss.NewStyle().Foreground(OnAcc).Background(Accent)
 )
 
+// GraphColours is the cycle the git graph draws lines of descent in, so a
+// branch keeps one colour the whole way down and the eye can follow it
+// across the lanes it crosses. The twelve are VS Code Git Graph's, which
+// are picked to stay apart from each other on a dark or a light terminal.
+var GraphColours = []lipgloss.Color{
+	"#0085d9", "#d9008f", "#00d90a", "#d98500",
+	"#a300d9", "#ff0000", "#00d9cc", "#e138e8",
+	"#85d900", "#dc5b23", "#6f24d6", "#ffcc00",
+}
+
+// graphStyles is one style per colour, built once: the graph restyles every
+// cell of every row on each frame, and lipgloss styles are not free.
+var graphStyles = func() []lipgloss.Style {
+	s := make([]lipgloss.Style, len(GraphColours))
+	for i, c := range GraphColours {
+		s[i] = lipgloss.NewStyle().Foreground(c)
+	}
+	return s
+}()
+
+// GraphStyle is the style branch i is drawn in. Colours wrap, and anything
+// with no branch of its own — the gaps, a lane whose colour was never set —
+// comes out in the same subtle grey the pane borders use.
+func GraphStyle(i int) lipgloss.Style {
+	if i < 0 {
+		return MetaStyle
+	}
+	return graphStyles[i%len(graphStyles)]
+}
+
 // MaxWidth clips a styled string to w printable columns.
 func MaxWidth(w int) lipgloss.Style {
 	return lipgloss.NewStyle().MaxWidth(w)

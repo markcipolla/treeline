@@ -357,8 +357,13 @@ type Commit struct {
 // LogRow is one display line of the graph log: the rail drawing, and for
 // rows that carry a commit, an index into GraphLog.Commits. A Divider row
 // marks where the checked-out branch forked from the base ref.
+//
+// Colours runs alongside Graph, one entry per rune: the branch that rune
+// belongs to as an index into tui.GraphColours, or -1 where the cell is
+// blank or belongs to no branch in particular.
 type LogRow struct {
 	Graph   string
+	Colours []int8
 	Commit  int // index into Commits; -1 for rail-only and divider rows
 	Divider bool
 }
@@ -401,8 +406,31 @@ func Log(dir string, n int) (GraphLog, error) {
 		b.add(c, strings.Fields(f[2]))
 	}
 	g.Rows, g.Commits = b.rows, b.commits
+	g.squareOff()
 	g.markBranchStart(dir)
 	return g, nil
+}
+
+// squareOff pads every row's rails out to the width of the widest, plus a
+// gap. Left ragged, each commit's text would start right after its own
+// lane, so on a narrow row the text sits in a column a lane runs down
+// everywhere else and the line reads as broken; squared off, a lane's
+// column holds rails or nothing, never letters.
+func (g *GraphLog) squareOff() {
+	w := 0
+	for _, row := range g.Rows {
+		if n := len([]rune(strings.TrimRight(row.Graph, " "))); n > w {
+			w = n
+		}
+	}
+	w += 2 // the gap between the rails and the commit text
+	for i, row := range g.Rows {
+		r, col := []rune(row.Graph), row.Colours
+		for len(r) < w {
+			r, col = append(r, ' '), append(col, noColour)
+		}
+		g.Rows[i].Graph, g.Rows[i].Colours = string(r[:w]), col[:w]
+	}
 }
 
 // markBranchStart inserts a divider row above the merge-base with the

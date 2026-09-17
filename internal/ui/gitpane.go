@@ -442,6 +442,43 @@ func (m Model) commitDetail() string {
 	return b.String()
 }
 
+// railsLine paints a row's rails, each run of cells belonging to one branch
+// in that branch's colour, and clips the result to maxw columns. Blanks are
+// left unstyled: a row is mostly gap, and an escape sequence around every
+// space would triple the size of the frame for nothing.
+func railsLine(row gitx.LogRow, maxw int) string {
+	r := []rune(row.Graph)
+	if maxw < len(r) {
+		if maxw < 0 {
+			maxw = 0
+		}
+		r = r[:maxw]
+	}
+	// a row Colours does not reach — nothing builds one, but a hand-made
+	// LogRow can — falls back to the grey everything used to be drawn in
+	colourAt := func(i int) int8 {
+		if i < len(row.Colours) {
+			return row.Colours[i]
+		}
+		return -1
+	}
+	var b strings.Builder
+	for i := 0; i < len(r); {
+		colour := colourAt(i)
+		j := i
+		for j < len(r) && colourAt(j) == colour {
+			j++
+		}
+		if run := string(r[i:j]); strings.TrimSpace(run) == "" {
+			b.WriteString(run)
+		} else {
+			b.WriteString(graphStyle(int(colour)).Render(run))
+		}
+		i = j
+	}
+	return b.String()
+}
+
 // logRowLine renders one row of the graph log: rails in the border style, the
 // branch-start divider as a labelled rule, and commit rows — hash, ref
 // decorations, subject — marked as click zones. Every row starts with the
@@ -455,10 +492,10 @@ func (m Model) logRowLine(row gitx.LogRow, w int) string {
 		return "  " + metaStyle.Render(truncate(rule, w-2))
 	}
 	if row.Commit < 0 {
-		return "  " + metaStyle.Render(truncate(row.Graph, w-2))
+		return "  " + railsLine(row, w-2)
 	}
 	c := m.commits[row.Commit]
-	graph := metaStyle.Render(row.Graph)
+	graph := railsLine(row, w-2)
 	avail := w - 2 - len([]rune(row.Graph))
 	refs := ""
 	if c.Refs != "" {
