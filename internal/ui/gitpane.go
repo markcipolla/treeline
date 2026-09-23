@@ -629,7 +629,8 @@ func (m Model) clickGitTab(msg tea.MouseMsg) (tea.Model, tea.Cmd, bool) {
 	return mm, tea.Batch(cmd, fcmd), true
 }
 
-// clickGitFile selects a clicked row, focusing the git pane.
+// clickGitFile selects a clicked row, focusing the git pane. A double click
+// goes on to open the file in the editor next door.
 func (m Model) clickGitFile(staged bool, i int) (tea.Model, tea.Cmd) {
 	m.gitMode = gitModeFiles
 	if staged {
@@ -641,7 +642,47 @@ func (m Model) clickGitFile(staged bool, i int) (tea.Model, tea.Cmd) {
 	m.revealGitSel()
 	mm, cmd := m.focusPane(paneDiff)
 	model := mm.(Model)
-	return model, tea.Batch(cmd, model.loadSelectedFileDiff())
+	cmd = tea.Batch(cmd, model.loadSelectedFileDiff())
+	if m.dblClick {
+		mdl, ocmd := model.openSelectedInIDE()
+		return mdl, tea.Batch(cmd, ocmd)
+	}
+	return model, cmd
+}
+
+// openSelectedInIDE hands the selected file to the ide pane: the git pane
+// says what changed, the editor is next door.
+func (m Model) openSelectedInIDE() (tea.Model, tea.Cmd) {
+	fs, _, ok := m.selectedGitFile()
+	if !ok {
+		return m, nil
+	}
+	mm, fcmd := m.focusPane(paneIDE)
+	m2 := mm.(Model)
+	if m2.pane != paneIDE {
+		return m2, fcmd // no worktree to edit in
+	}
+	cmd := m2.ideReady().OpenFile(fs.Path)
+	m2.pullIDEErr()
+	return m2, tea.Batch(fcmd, cmd)
+}
+
+// gitFileRowAt is the file row under the pointer in files mode.
+func (m Model) gitFileRowAt(msg tea.MouseMsg) (staged bool, i int, ok bool) {
+	if !m.threePane() || m.gitMode != gitModeFiles {
+		return false, 0, false
+	}
+	for i := range m.gitUnstaged {
+		if m.clicked(msg, gitZoneID(false, i)) {
+			return false, i, true
+		}
+	}
+	for i := range m.gitStaged {
+		if m.clicked(msg, gitZoneID(true, i)) {
+			return true, i, true
+		}
+	}
+	return false, 0, false
 }
 
 // reloadGit refreshes the pane's status and log for the current directory.
@@ -838,19 +879,7 @@ func (m Model) keyGit(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "r":
 		return m, m.reloadGit()
 	case "o":
-		// hand the file to the ide pane: the git pane says what changed,
-		// the editor is next door
-		if fs, _, ok := m.selectedGitFile(); ok {
-			mm, fcmd := m.focusPane(paneIDE)
-			m2 := mm.(Model)
-			if m2.pane != paneIDE {
-				return m2, fcmd // no worktree to edit in
-			}
-			cmd := m2.ideReady().OpenFile(fs.Path)
-			m2.pullIDEErr()
-			return m2, tea.Batch(fcmd, cmd)
-		}
-		return m, nil
+		return m.openSelectedInIDE()
 	}
 	return m, nil
 }
