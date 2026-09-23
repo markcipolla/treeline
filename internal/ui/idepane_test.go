@@ -261,3 +261,45 @@ func TestIDETabCloseClick(t *testing.T) {
 		t.Fatalf("second ✕ should close the tab, got %d", len(m.ide.Tabs()))
 	}
 }
+
+// TestDoubleClickGitFileOpensInIDE: one click on a file row selects it, a
+// second one straight after opens it in the editor next door instead of
+// selecting its name as text.
+func TestDoubleClickGitFileOpensInIDE(t *testing.T) {
+	m := ideTestModel(t, 200)
+	mm, _ := m.focusPane(paneDiff)
+	m = mm.(Model)
+	m.gitMode = gitModeFiles
+	m.gitUnstaged = []gitx.FileStatus{{Path: "main.go", Unstaged: 'M'}}
+	z := awaitZone(t, m, gitZoneID(false, 0))
+
+	press := tea.MouseMsg{X: z.StartX + 2, Y: z.StartY,
+		Button: tea.MouseButtonLeft, Action: tea.MouseActionPress}
+	release := press
+	release.Action = tea.MouseActionRelease
+
+	click := func() {
+		for _, msg := range []tea.MouseMsg{press, release} {
+			mm, _ := m.Update(msg)
+			m = mm.(Model)
+		}
+	}
+
+	click()
+	if m.ide.ActiveFile() != "" {
+		t.Fatalf("a single click opened %q", m.ide.ActiveFile())
+	}
+	if m.pane != paneDiff {
+		t.Fatalf("pane = %d after one click, want paneDiff", m.pane)
+	}
+	click()
+	if m.pane != paneIDE {
+		t.Fatalf("pane = %d after a double click, want paneIDE", m.pane)
+	}
+	if got := m.ide.ActiveFile(); got != "main.go" {
+		t.Fatalf("active buffer = %q, want main.go", got)
+	}
+	if _, _, ok := m.gitSel.bounds(); ok {
+		t.Error("the double click selected text instead of opening the file")
+	}
+}

@@ -2986,8 +2986,16 @@ func (m *Model) selectGitText(msg tea.MouseMsg) (bool, tea.Cmd) {
 			return false, nil
 		}
 		col, line := m.gitBodyPos(msg)
-		if m.dblClick && m.pressGitWord(col, line) {
-			return true, nil
+		if m.dblClick {
+			// a double click on a file row opens it rather than selecting
+			// its name: leave the release to the ordinary click path
+			if _, _, ok := m.gitFileRowAt(msg); ok {
+				m.gitSel.clear()
+				return false, nil
+			}
+			if m.pressGitWord(col, line) {
+				return true, nil
+			}
 		}
 		m.gitSel.press(col, line)
 		return true, nil
@@ -3165,17 +3173,8 @@ func (m Model) handleClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
-		if m.threePane() && m.gitMode == gitModeFiles {
-			for i := range m.gitUnstaged {
-				if m.clicked(msg, gitZoneID(false, i)) {
-					return m.clickGitFile(false, i)
-				}
-			}
-			for i := range m.gitStaged {
-				if m.clicked(msg, gitZoneID(true, i)) {
-					return m.clickGitFile(true, i)
-				}
-			}
+		if staged, i, ok := m.gitFileRowAt(msg); ok {
+			return m.clickGitFile(staged, i)
 		}
 		if m.threePane() && m.clicked(msg, "pane:ide") {
 			return m.clickIDE(msg)
