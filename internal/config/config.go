@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/markcipolla/treeline/internal/linear"
@@ -28,10 +29,25 @@ type Config struct {
 	// a terminal without one shows boxes: unset means on, set it to false to
 	// get the plain tree back.
 	FileIcons *bool `json:"file_icons,omitempty"`
+	// AgentCommand is the coding agent launched in the agent pane, run
+	// through `sh -c` so flags, quoting and env vars all work. Empty means
+	// DefaultAgent.
+	AgentCommand string `json:"agent_command,omitempty"`
 	// Repos remembers primary checkouts by name (e.g. "monorepo"), so
 	// treeline can be launched anywhere, list every repo's worktrees, and
 	// offer a repo picker when creating one.
 	Repos map[string]RepoConfig `json:"repos,omitempty"`
+}
+
+// DefaultAgent is the command run when agent_command is unset.
+const DefaultAgent = "claude --dangerously-skip-permissions"
+
+// Agent is the command line to launch the agent with.
+func (c *Config) Agent() string {
+	if cmd := strings.TrimSpace(c.AgentCommand); cmd != "" {
+		return cmd
+	}
+	return DefaultAgent
 }
 
 // Persist reports whether embedded sessions should be tmux-backed.

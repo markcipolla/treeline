@@ -16,11 +16,11 @@ import (
 // worktrees already listed.
 func newTestModel(t *testing.T, width int) Model {
 	t.Helper()
-	startTerm = func(dir string, cols, rows int, persist bool) (*claudeSession, error) {
+	startTerm = func(dir string, cols, rows int, persist bool, agent string) (*claudeSession, error) {
 		return nil, errors.New("claude sessions disabled in tests")
 	}
 	startShell = func(dir string, cols, rows int, persist bool, kind string) (*claudeSession, error) {
-		return startTerm(dir, cols, rows, persist)
+		return startTerm(dir, cols, rows, persist, "true")
 	}
 
 	root := t.TempDir()

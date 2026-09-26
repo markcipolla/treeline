@@ -16,11 +16,11 @@ import (
 // TestViewSmoke renders every main-screen layout at several sizes to catch
 // panics from width/height arithmetic.
 func TestViewSmoke(t *testing.T) {
-	startTerm = func(dir string, cols, rows int, persist bool) (*claudeSession, error) {
+	startTerm = func(dir string, cols, rows int, persist bool, agent string) (*claudeSession, error) {
 		return nil, errors.New("claude sessions disabled in tests")
 	}
 	startShell = func(dir string, cols, rows int, persist bool, kind string) (*claudeSession, error) {
-		return startTerm(dir, cols, rows, persist)
+		return startTerm(dir, cols, rows, persist, "true")
 	}
 
 	cfg := &config.Config{BranchTypes: []string{"feature", "bugfix"}, SlugMaxLen: 48}

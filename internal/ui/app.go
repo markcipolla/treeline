@@ -75,6 +75,8 @@ type Model struct {
 	setInputs   [4]textinput.Model // name, path, setup, cleanup
 	setPaneOn   bool               // "show setup in a pane" checkbox
 	setFocus    int
+	agentInput  textinput.Model // the agent command field
+	agentEdit   bool            // that field has the keyboard
 
 	zones *zone.Manager
 
@@ -284,6 +286,8 @@ func New(cfg *config.Config, root string) Model {
 		newInput("optional cleanup script"),
 	}
 
+	agentInput := newInput(config.DefaultAgent)
+
 	commitSubject := newInput("summary of the change…")
 	commitBody := textarea.New()
 	commitBody.Placeholder = "longer description (optional)…"
@@ -315,6 +319,7 @@ func New(cfg *config.Config, root string) Model {
 		filterInput:   filterInput,
 		searchInput:   searchInput,
 		setInputs:     setInputs,
+		agentInput:    agentInput,
 		commitSubject: commitSubject,
 		commitBody:    commitBody,
 		ide:           ide.New(zones, cfg.Icons()),
@@ -942,6 +947,7 @@ func (m *Model) resize() {
 	for i := range m.setInputs {
 		m.setInputs[i].Width = inputW
 	}
+	m.agentInput.Width = inputW
 	m.branchInput.Width = inputW
 	m.manualInput.Width = inputW
 	for i := range m.authInputs {
@@ -2043,7 +2049,7 @@ func (m *Model) ensureTerm() tea.Cmd {
 		return nil
 	}
 	cols, rows := m.termSize()
-	s, err := startTerm(dir, cols, rows, m.cfg.Persist())
+	s, err := startTerm(dir, cols, rows, m.cfg.Persist(), m.cfg.Agent())
 	if err != nil {
 		m.err = err
 		return nil

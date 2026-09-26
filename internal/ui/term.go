@@ -67,8 +67,10 @@ type selPoint struct{ line, col int }
 // persist asks for the program to run inside treeline's tmux server, so the
 // session outlives this treeline run.
 var (
-	startTerm = func(dir string, cols, rows int, persist bool) (*claudeSession, error) {
-		return startProgramSession(dir, cols, rows, persist, "balance", "balance")
+	// agent is the configured command line, run through sh so flags and
+	// quoting in it work as typed.
+	startTerm = func(dir string, cols, rows int, persist bool, agent string) (*claudeSession, error) {
+		return startProgramSession(dir, cols, rows, persist, "balance", "sh", "-c", agent)
 	}
 	// kind names the tab ("shell", "shell2", …) so every extra shell tab
 	// persists as a tmux session of its own.

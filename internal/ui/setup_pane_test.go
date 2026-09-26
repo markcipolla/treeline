@@ -16,7 +16,7 @@ import (
 // setup script, shown in the shell pane's tab or not.
 func newSetupPaneModel(t *testing.T, width int, pane bool) Model {
 	t.Helper()
-	startTerm = func(dir string, cols, rows int, persist bool) (*claudeSession, error) {
+	startTerm = func(dir string, cols, rows int, persist bool, agent string) (*claudeSession, error) {
 		return nil, errors.New("claude sessions disabled in tests")
 	}
 	startShell = func(dir string, cols, rows int, persist bool, kind string) (*claudeSession, error) {

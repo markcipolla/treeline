@@ -275,7 +275,8 @@ they always did: the programs are killed when treeline exits. Set
   "linear": { "client_id": "…", "client_secret": "…", "access_token": "…" },
   "branch_types": ["feature", "bugfix", "hotfix", "chore"],
   "slug_max_len": 48,
-  "persist_sessions": true
+  "persist_sessions": true,
+  "agent_command": "claude --dangerously-skip-permissions"
 }
 ```
 
@@ -311,7 +312,10 @@ shell tabs, `ctrl+←`/`ctrl+→` (or a click) switch between them, and each
 tab is its own tmux session. The config lives at
 `~/.config/treeline/config.json`.
 
-`branch_types` controls the type-picker options; `slug_max_len` caps the
+`agent_command` is what the agent pane launches in each worktree, run with
+`sh -c` (top field of the `,` settings screen); unset means
+`claude --dangerously-skip-permissions`. `branch_types` controls the
+type-picker options; `slug_max_len` caps the
 slug generated from issue titles; `persist_sessions` (default on wherever
 tmux is installed) keeps the claude and shell panes alive between launches —
 see [Background sessions](#background-sessions).
