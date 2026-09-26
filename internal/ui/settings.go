@@ -25,14 +25,30 @@ func (m Model) settingsNames() []string {
 	return names
 }
 
+// The settings list puts the agent command on row 0, the repos below it.
+const agentRow = 0
+
+// agentName is the program a command line runs, for labels.
+func agentName(cmd string) string {
+	if f := strings.Fields(cmd); len(f) > 0 {
+		return f[0]
+	}
+	return cmd
+}
+
 func (m Model) openSettings() (tea.Model, tea.Cmd) {
 	m.settingsIdx = 0
+	m.agentEdit = false
 	m.screen = scrSettings
 	return m, nil
 }
 
 func (m Model) keySettings(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	names := m.settingsNames()
+	if m.agentEdit {
+		return m.keyAgentEdit(k)
+	}
+	repo := m.settingsIdx - 1 // -1 while the agent row is selected
 	switch k.String() {
 	case "esc", "q":
 		m.screen = scrMain
@@ -42,25 +58,49 @@ func (m Model) keySettings(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.settingsIdx--
 		}
 	case "down", "j":
-		if m.settingsIdx < len(names)-1 {
+		if m.settingsIdx < len(names) {
 			m.settingsIdx++
 		}
 	case "enter", "e":
-		if m.settingsIdx < len(names) {
-			return m.openRepoEdit(names[m.settingsIdx])
+		if repo < 0 {
+			m.agentInput.SetValue(m.cfg.AgentCommand)
+			m.agentInput.CursorEnd()
+			m.agentEdit = true
+			return m, m.agentInput.Focus()
 		}
+		return m.openRepoEdit(names[repo])
 	case "a", "n":
 		return m.openRepoEdit("")
 	case "x", "d":
-		if m.settingsIdx < len(names) {
-			delete(m.cfg.Repos, names[m.settingsIdx])
-			if m.settingsIdx > 0 {
-				m.settingsIdx--
-			}
+		if repo >= 0 {
+			delete(m.cfg.Repos, names[repo])
+			m.settingsIdx--
 			return m, m.applyRepoChanges()
 		}
 	}
 	return m, nil
+}
+
+// keyAgentEdit drives the agent command field: enter saves it to the config
+// file, esc leaves what was there.
+func (m Model) keyAgentEdit(k tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch k.String() {
+	case "esc":
+		m.agentEdit = false
+		m.agentInput.Blur()
+		return m, nil
+	case "enter":
+		m.cfg.AgentCommand = strings.TrimSpace(m.agentInput.Value())
+		m.agentEdit = false
+		m.agentInput.Blur()
+		if err := m.cfg.Save(); err != nil {
+			m.err = err
+		}
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.agentInput, cmd = m.agentInput.Update(k)
+	return m, cmd
 }
 
 // The repo-edit form is the four text inputs with a checkbox between setup
@@ -180,8 +220,24 @@ func (m *Model) applyRepoChanges() tea.Cmd {
 
 func (m Model) viewSettings() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("Settings — repos") + "\n")
+	b.WriteString(titleStyle.Render("Settings") + "\n")
 	b.WriteString(dimStyle.Render("worktrees from every repo show in the list; setup runs after a worktree is created, cleanup before it is removed") + "\n\n")
+	b.WriteString(dimStyle.Render("agent command — what each worktree's agent pane runs") + "\n")
+	if m.agentEdit {
+		b.WriteString(m.agentInput.View() + "\n")
+		b.WriteString(dimStyle.Render("  run with sh -c in the worktree — enter saves, esc cancels") + "\n")
+	} else {
+		line := padRight("agent", 16) + m.cfg.Agent()
+		if m.cfg.AgentCommand == "" {
+			line += dimStyle.Render(" (default)")
+		}
+		if m.settingsIdx == agentRow {
+			b.WriteString(cursorStyle.Render("❯ ") + okStyle.Render(line) + "\n")
+		} else {
+			b.WriteString("  " + line + "\n")
+		}
+	}
+	b.WriteString("\n" + dimStyle.Render("repos") + "\n")
 	names := m.settingsNames()
 	if len(names) == 0 {
 		b.WriteString(dimStyle.Render("  no repos registered — press a to add one") + "\n")
@@ -199,7 +255,7 @@ func (m Model) viewSettings() string {
 			marks += " ⌫cleanup"
 		}
 		line := padRight(n, 16) + rc.Path + dimStyle.Render(marks)
-		if i == m.settingsIdx {
+		if i+1 == m.settingsIdx {
 			b.WriteString(cursorStyle.Render("❯ ") + okStyle.Render(line) + "\n")
 		} else {
 			b.WriteString("  " + line + "\n")
