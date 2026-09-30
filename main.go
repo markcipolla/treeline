@@ -64,7 +64,23 @@ treeline() {
 tl() { treeline "$@"; }
 `
 
+// stripMallocDebugEnv drops macOS's malloc-debug variables from our own
+// environment. libmalloc greets every process that inherits one with a line
+// on stderr ("MallocStackLogging: …"), and treeline spawns a lot of
+// processes: the noise lands in terminal panes and in front of the output
+// treeline parses. We're long past malloc init by now, so dropping them
+// costs this process nothing and gives every child a quiet start.
+func stripMallocDebugEnv() {
+	for _, kv := range os.Environ() {
+		if k, _, _ := strings.Cut(kv, "="); strings.HasPrefix(k, "MallocStackLogging") {
+			os.Unsetenv(k)
+		}
+	}
+}
+
 func main() {
+	stripMallocDebugEnv()
+
 	var cdFile string
 	var rest []string
 	args := os.Args[1:]
