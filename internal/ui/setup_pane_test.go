@@ -31,7 +31,7 @@ func newSetupPaneModel(t *testing.T, width int, pane bool) Model {
 		BranchTypes: []string{"feature"},
 		SlugMaxLen:  48,
 		Repos: map[string]config.RepoConfig{
-			"main": {Path: root, Setup: "echo serving", SetupPane: pane},
+			"main": {Path: root, Setup: "echo serving", Cleanup: "echo gone", SetupPane: pane},
 		},
 	}
 	m := New(cfg, root)
@@ -86,14 +86,13 @@ func TestSetupTabLeadsShellPane(t *testing.T) {
 	}
 }
 
-// TestCreatedLaunchesSetupTab: with the checkbox on, worktree creation runs
-// the setup script in the setup tab and brings it to the front.
-func TestCreatedLaunchesSetupTab(t *testing.T) {
+// TestCreatedShowsSetupBanner: with the checkbox on, worktree creation brings
+// the setup tab to the front but leaves the script behind its banner.
+func TestCreatedShowsSetupBanner(t *testing.T) {
 	m := newSetupPaneModel(t, 200, true)
-	var gotScript string
-	var gotEnv []string
+	started := false
 	startSetup = func(dir string, cols, rows int, persist bool, script string, env []string) (*claudeSession, error) {
-		gotScript, gotEnv = script, env
+		started = true
 		return fakeTermSession(dir), nil
 	}
 
@@ -104,19 +103,64 @@ func TestCreatedLaunchesSetupTab(t *testing.T) {
 	if got.setupBusy {
 		t.Error("tab mode must not flag the background setupBusy spinner")
 	}
-	if gotScript != "echo serving" {
-		t.Errorf("startSetup script = %q, want the repo's setup hook", gotScript)
-	}
-	wantEnv := "TREELINE_WORKTREE=" + path
-	if !containsStr(gotEnv, wantEnv) {
-		t.Errorf("startSetup env %v missing %q", gotEnv, wantEnv)
+	if started {
+		t.Error("the setup script must wait for the banner's button")
 	}
 	tabs := got.termTabs[path]
-	if len(tabs) == 0 || tabs[0].kind != "setup" || tabs[0].sess == nil {
-		t.Fatalf("want a running setup tab first, got %v", tabKinds(tabs))
+	if len(tabs) == 0 || tabs[0].kind != "setup" || tabs[0].sess != nil {
+		t.Fatalf("want an idle setup tab first, got %v", tabKinds(tabs))
 	}
 	if got.termSel[path] != 0 {
 		t.Errorf("active tab = %d, want the setup tab in front", got.termSel[path])
+	}
+}
+
+// TestSetupBannerRunsThenTearsDown: the banner's button runs the setup script,
+// then — with the script up — reads as a teardown and runs the cleanup hook.
+func TestSetupBannerRunsThenTearsDown(t *testing.T) {
+	m := newSetupPaneModel(t, 200, true)
+	var scripts []string
+	startSetup = func(dir string, cols, rows int, persist bool, script string, env []string) (*claudeSession, error) {
+		scripts = append(scripts, script)
+		return fakeTermSession(dir), nil
+	}
+	dir := m.claudeDir()
+	mm, _ := m.focusPane(paneTerm)
+	m = mm.(Model)
+	m.termTabsFor(dir) // materialize the setup tab
+
+	if body := m.viewPanels(); !strings.Contains(body, "run setup") {
+		t.Error("the idle setup tab should offer to run the script")
+	}
+
+	// switching to the tab must not start anything; the button must
+	if cmd := m.ensureTermTab(); cmd != nil || len(scripts) != 0 {
+		t.Fatalf("selecting the setup tab started %v", scripts)
+	}
+	if cmd := m.toggleSetup(); cmd == nil {
+		t.Fatal("the button should have started the setup script")
+	}
+	setup := findTab(m.termTabs[dir], "setup")
+	if setup.sess == nil || setup.teardown {
+		t.Fatal("want the setup script running in the tab")
+	}
+	if body := m.viewPanels(); !strings.Contains(body, "teardown") {
+		t.Error("a running setup script should offer a teardown")
+	}
+
+	ran := setup.sess
+	if cmd := m.toggleSetup(); cmd == nil {
+		t.Fatal("the button should have started the cleanup script")
+	}
+	if setup.sess == ran || !setup.teardown {
+		t.Fatal("teardown should replace the session with the cleanup script")
+	}
+	if strings.Join(scripts, " ") != "echo serving echo gone" {
+		t.Errorf("scripts run = %v, want setup then cleanup", scripts)
+	}
+	// the cleanup script holds the tab until it is done
+	if cmd := m.toggleSetup(); cmd != nil {
+		t.Error("teardown twice should be a no-op while cleanup runs")
 	}
 }
 
