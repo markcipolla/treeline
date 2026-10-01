@@ -345,12 +345,11 @@ func (m Model) viewPanels() string {
 			sel = 0
 		}
 		termTitle = "shell"
+		t := tabs[sel]
 		var body string
-		switch t := tabs[sel]; {
+		switch {
 		case t.sess == nil:
-			if t.kind == "setup" {
-				body = dimStyle.Render("the setup script runs here when a worktree is created — press enter to run it now")
-			} else {
+			if t.kind != "setup" {
 				body = dimStyle.Render("tab here (or click) to open a shell in this worktree\n\nctrl+t opens another shell tab")
 			}
 		case t.sess.exited.Load():
@@ -376,6 +375,9 @@ func (m Model) viewPanels() string {
 			}
 		}
 		bar := m.termTabBar(tabs, sel, l.term.w-3, m.pane == paneTerm)
+		if t.kind == "setup" {
+			bar = append(bar, m.setupBanner(t, l.term.w-3)...)
+		}
 		termBody = strings.Join(append(bar, strings.Split(body, "\n")...), "\n")
 	}
 	term := m.mark("pane:term",
@@ -463,6 +465,27 @@ func (m Model) termTabBar(tabs []*termTab, sel, w int, focused bool) []string {
 	}
 	items = append(items, tabItem{zone: "termtab:new", label: "+"})
 	return m.tabBar(w, focused, items)
+}
+
+// setupBanner is the bar across the top of the shell pane's setup tab: the
+// repo's setup script sits behind its button rather than running on its own,
+// and while it is up the same button tears it down with the cleanup script.
+func (m Model) setupBanner(t *termTab, w int) []string {
+	repo, _ := m.setupRepo()
+	line := m.button("btn:setup", "▶ run setup", true) + " " + dimStyle.Render(repo.setup)
+	if t.sess != nil && !t.sess.exited.Load() {
+		switch {
+		case t.teardown:
+			line = dimStyle.Render("tearing down… " + repo.cleanup)
+		case repo.cleanup != "":
+			line = m.button("btn:setup", "■ teardown", false) + " " +
+				dimStyle.Render(repo.cleanup+" · ctrl+k")
+		default:
+			line = m.button("btn:setup", "■ kill", false) + " " +
+				dimStyle.Render("no cleanup script — this just stops it · ctrl+k")
+		}
+	}
+	return []string{line, dimStyle.Render(strings.Repeat("─", w))}
 }
 
 // mark tags a pane's rows for the mouse. The zone covers the pane's inside,

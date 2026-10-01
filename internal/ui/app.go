@@ -749,9 +749,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds := []tea.Cmd{m.loadWorktrees()}
 		if repo := m.repoFor(msg.root); repo.setup != "" {
 			if repo.setupPane {
-				// the script runs in the shell pane's setup tab, where it
-				// can be watched — and where a server it starts keeps going
-				cmds = append(cmds, m.startSetupTab(msg.path, repo, msg.branchName, m.pendKey))
+				// the tab comes to the front with its banner up: the script
+				// runs where it can be watched, once it is asked for
+				m.showSetupTab(msg.path)
 			} else {
 				m.setupBusy = true
 				cmds = append(cmds, runSetupCmd(repo.setup, msg.path,
@@ -908,8 +908,13 @@ func (m *Model) resize() {
 		for _, tabs := range m.termTabs {
 			for _, t := range tabs {
 				if t.sess != nil {
-					// the tab row sits above the terminal grid
-					t.sess.resize(l.term.w-3, l.term.h-4-tabBarH)
+					// the tab row — and the setup tab's banner — sit above
+					// the terminal grid
+					rows := l.term.h - 4 - tabBarH
+					if t.kind == "setup" {
+						rows -= setupBannerH
+					}
+					t.sess.resize(l.term.w-3, rows)
 				}
 			}
 		}
@@ -2077,12 +2082,39 @@ func (m Model) shellSize() (cols, rows int) {
 	return b.w - 3, b.h - 4 - tabBarH
 }
 
+// setupBannerH is the height of the setup tab's run/teardown banner: the
+// button row and the rule under it.
+const setupBannerH = 2
+
+// termTabSize is the grid one tab's terminal gets: the setup tab gives up
+// its top rows to the banner.
+func (m Model) termTabSize(kind string) (cols, rows int) {
+	cols, rows = m.shellSize()
+	if kind == "setup" {
+		rows -= setupBannerH
+	}
+	return cols, rows
+}
+
+// termBannerH is the rows the setup tab's banner takes above the shell
+// pane's terminal grid, 0 for every other tab — the mouse measures its
+// offsets into the grid through it.
+func (m Model) termBannerH() int {
+	if t := m.activeTermTab(m.claudeDir()); t != nil && t.kind == "setup" {
+		return setupBannerH
+	}
+	return 0
+}
+
 // termTab is one tab of the shell pane: the shell itself, the repo's setup
 // script, or an extra shell. kind doubles as the tmux session kind, so every
 // tab persists on its own.
 type termTab struct {
 	kind string // "shell", "setup", "shell2" … "shell9"
 	sess *claudeSession
+	// teardown marks the setup tab's session as the repo's cleanup script
+	// rather than its setup script, so the banner stops offering to kill it.
+	teardown bool
 }
 
 func findTab(tabs []*termTab, kind string) *termTab {
@@ -2170,9 +2202,9 @@ func (m Model) setupRepo() (repoEntry, bool) {
 }
 
 // ensureTermTab starts (or reattaches) the active tab's session for the
-// selected worktree: the shell for shell tabs, the setup script for the
-// setup tab. A persisted session that is still running is attached, not
-// started over.
+// selected worktree: the shell for
+// shell tabs. The setup tab is left to its banner. A persisted session that
+// is still running is attached, not started over.
 func (m *Model) ensureTermTab() tea.Cmd {
 	dir := m.claudeDir()
 	if dir == "" {
@@ -2182,26 +2214,11 @@ func (m *Model) ensureTermTab() tea.Cmd {
 	if t == nil || t.sess != nil {
 		return nil
 	}
-	cols, rows := m.shellSize()
-	var (
-		s   *claudeSession
-		err error
-	)
 	if t.kind == "setup" {
-		repo, ok := m.setupRepo()
-		if !ok {
-			return nil
-		}
-		branch, issue := m.createdBranch, m.pendKey
-		if ref := m.selectedRef(); ref.wt != nil && ref.wt.Path == dir {
-			branch = ref.wt.Branch
-			issue = issueKeyFromBranch(branch)
-		}
-		s, err = startSetup(dir, cols, rows, m.cfg.Persist(), repo.setup,
-			scriptEnv(repo.name, dir, branch, issue))
-	} else {
-		s, err = startShell(dir, cols, rows, m.cfg.Persist(), t.kind)
+		return nil // the setup script waits behind the banner's button
 	}
+	cols, rows := m.termTabSize(t.kind)
+	s, err := startShell(dir, cols, rows, m.cfg.Persist(), t.kind)
 	if err != nil {
 		m.err = err
 		return nil
@@ -2210,9 +2227,10 @@ func (m *Model) ensureTermTab() tea.Cmd {
 	return waitClaudeTerm(s)
 }
 
-// startSetupTab launches the setup script in the shell pane's setup tab the
-// moment a worktree is created, and brings the tab to the front.
-func (m *Model) startSetupTab(dir string, repo repoEntry, branch, issue string) tea.Cmd {
+// showSetupTab brings the shell pane's setup tab to the front the moment a
+// worktree is created. The script stays behind the tab's banner: a setup hook
+// can run long, or leave a server up, so it waits to be asked for.
+func (m *Model) showSetupTab(dir string) {
 	tabs := m.termTabs[dir]
 	if len(tabs) == 0 {
 		tabs = []*termTab{{kind: "shell"}}
@@ -2228,18 +2246,68 @@ func (m *Model) startSetupTab(dir string, repo repoEntry, branch, issue string) 
 			m.termSel[dir] = i
 		}
 	}
-	if t.sess != nil {
+}
+
+// setupTab is the selected worktree's setup tab and the repo whose scripts
+// run in it; ok is false when there is no such tab.
+func (m Model) setupTab() (dir string, t *termTab, repo repoEntry, ok bool) {
+	dir = m.claudeDir()
+	if dir == "" {
+		return "", nil, repoEntry{}, false
+	}
+	repo, _ = m.setupRepo()
+	t = findTab(m.termTabs[dir], "setup")
+	return dir, t, repo, t != nil
+}
+
+// toggleSetup is the setup banner's button: it runs the repo's setup script
+// in the tab, and while that script is up it kills it and runs the repo's
+// cleanup script in its place.
+func (m *Model) toggleSetup() tea.Cmd {
+	dir, t, repo, ok := m.setupTab()
+	if !ok {
 		return nil
 	}
-	cols, rows := m.shellSize()
-	s, err := startSetup(dir, cols, rows, m.cfg.Persist(), repo.setup,
+	script, teardown := repo.setup, false
+	if t.sess != nil && !t.sess.exited.Load() {
+		if t.teardown {
+			return nil // the cleanup script already has the tab
+		}
+		script, teardown = repo.cleanup, true
+	}
+	if t.sess != nil {
+		// the tmux session goes too: a detached setup script would otherwise
+		// outlive the tab that was watching it
+		if t.sess.tmuxName != "" {
+			_ = tmux.Kill(t.sess.tmuxName)
+		}
+		t.sess.close()
+		t.sess, t.teardown = nil, false
+	}
+	if script == "" {
+		return nil // a kill with no cleanup hook stops at the kill
+	}
+	branch, issue := m.setupScriptEnv(dir)
+	cols, rows := m.termTabSize("setup")
+	s, err := startSetup(dir, cols, rows, m.cfg.Persist(), script,
 		scriptEnv(repo.name, dir, branch, issue))
 	if err != nil {
 		m.err = err
 		return nil
 	}
-	t.sess = s
+	t.sess, t.teardown = s, teardown
 	return waitClaudeTerm(s)
+}
+
+// setupScriptEnv is the branch and issue the setup scripts are told about:
+// the selected worktree's, or the one just created.
+func (m Model) setupScriptEnv(dir string) (branch, issue string) {
+	branch, issue = m.createdBranch, m.pendKey
+	if ref := m.selectedRef(); ref.wt != nil && ref.wt.Path == dir {
+		branch = ref.wt.Branch
+		issue = issueKeyFromBranch(branch)
+	}
+	return branch, issue
 }
 
 // switchTermTab moves the active tab by delta, starting its session if the
@@ -2354,6 +2422,17 @@ func (m Model) keyShell(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.addTermTab(dir)
 	}
 	t := m.activeTermTab(dir)
+	// the setup tab's banner owns its script: enter runs it, ctrl+k tears it
+	// down. Everything else still goes to the script's own terminal.
+	if t.kind == "setup" {
+		running := t.sess != nil && !t.sess.exited.Load()
+		switch {
+		case k.String() == "enter" && !running:
+			return m, m.toggleSetup()
+		case k.String() == "ctrl+k" && running:
+			return m, m.toggleSetup()
+		}
+	}
 	if t.sess == nil {
 		return m, m.ensureTermTab()
 	}
@@ -2722,7 +2801,8 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			s, z, top := m.terms[m.claudeDir()], m.zones.Get("pane:claude"), 2
 			if sh, zt := m.termSession(m.claudeDir()), m.zones.Get("pane:term"); sh != nil && (sh.selecting() || (zt != nil && !zt.IsZero() && zt.InBounds(msg))) {
 				s, z = sh, zt
-				top = 2 + tabBarH // the shell's tab row sits above its grid
+				// the shell's tab row (and the setup banner) sit above it
+				top = 2 + tabBarH + m.termBannerH()
 			}
 			if s != nil {
 				inPane := z != nil && !z.IsZero() && z.InBounds(msg)
@@ -2899,7 +2979,7 @@ func (m Model) paneBodyPos(pane int, msg tea.MouseMsg) (x, y int, ok bool) {
 	cx, cy := z.Pos(msg)
 	top := 2
 	if pane == paneTerm {
-		top += tabBarH
+		top += tabBarH + m.termBannerH()
 	}
 	return cx - 1, cy - top, true
 }
@@ -3206,6 +3286,11 @@ func (m Model) handleClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		case m.clicked(msg, "pane:diff"):
 			return m.focusPane(paneDiff)
 		case m.clicked(msg, "pane:term"):
+			if m.clicked(msg, "btn:setup") {
+				cmd := m.toggleSetup()
+				mm, fcmd := m.focusPane(paneTerm)
+				return mm, tea.Batch(cmd, fcmd)
+			}
 			if cmd, ok := m.clickTermTab(msg); ok {
 				mm, fcmd := m.focusPane(paneTerm)
 				return mm, tea.Batch(cmd, fcmd)
@@ -3213,7 +3298,7 @@ func (m Model) handleClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			if s := m.termSession(m.claudeDir()); s != nil {
 				z := m.zones.Get("pane:term")
 				x, y := z.Pos(msg)
-				if url := s.urlAt(x-1, y-2-tabBarH); url != "" {
+				if url := s.urlAt(x-1, y-2-tabBarH-m.termBannerH()); url != "" {
 					_ = openBrowser(url)
 					return m, nil
 				}
