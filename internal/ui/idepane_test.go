@@ -235,18 +235,17 @@ func TestIDETabCloseClick(t *testing.T) {
 	z := awaitZone(t, m, ide.TabCloseZoneID())
 	click := tea.MouseMsg{X: z.StartX, Y: z.StartY,
 		Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease}
-	t.Logf("DEBUG read zone: %+v", *z)
 	mm, _ := m.Update(click)
 	m = mm.(Model)
 	if tabs := m.ide.Tabs(); len(tabs) != 1 || m.ide.ActiveFile() != "main.go" {
-		if zz := m.zones.Get(ide.TabCloseZoneID()); zz != nil {
-			t.Logf("DEBUG zone at click time: %+v", *zz)
-		}
-		t.Logf("DEBUG tabs=%q active=%q dirty=%v", m.ide.Tabs(), m.ide.ActiveFile(), m.ide.AnyDirty())
-		rows := strings.Split(m.View(), "\n")
-		for i, r := range rows[:min(8, len(rows))] {
-			t.Logf("DEBUG row %d: %q", i, r)
-		}
+		// This has flaked on CI under load. The zone manager stores bounds
+		// off a background goroutine, so the suspect is the ✕ having moved
+		// or gone missing between the read above and the click — log both
+		// sides rather than leaving the next failure as mysterious as the
+		// last one.
+		t.Logf("zone read: %+v", *z)
+		t.Logf("zone at click time: %+v", m.zones.Get(ide.TabCloseZoneID()))
+		t.Logf("dirty: %v", m.ide.AnyDirty())
 		t.Fatalf("✕ should close util.go, got %d tabs, active %q", len(tabs), m.ide.ActiveFile())
 	}
 
