@@ -17,6 +17,7 @@ import (
 	"github.com/markcipolla/treeline/internal/config"
 	"github.com/markcipolla/treeline/internal/ide"
 	"github.com/markcipolla/treeline/internal/tui"
+	"github.com/markcipolla/treeline/internal/update"
 )
 
 var version = "dev"
@@ -61,9 +62,15 @@ func main() {
 		icons = cfg.Icons()
 	}
 
+	update.Check(version)
+
 	m := newModel(abs, icons)
 	if _, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion()).Run(); err != nil {
 		fatal(err.Error())
+	}
+
+	if n := update.Notice(version); n != "" {
+		fmt.Fprintln(os.Stderr, n)
 	}
 }
 
