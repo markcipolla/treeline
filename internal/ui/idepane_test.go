@@ -235,9 +235,18 @@ func TestIDETabCloseClick(t *testing.T) {
 	z := awaitZone(t, m, ide.TabCloseZoneID())
 	click := tea.MouseMsg{X: z.StartX, Y: z.StartY,
 		Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease}
+	t.Logf("DEBUG read zone: %+v", *z)
 	mm, _ := m.Update(click)
 	m = mm.(Model)
 	if tabs := m.ide.Tabs(); len(tabs) != 1 || m.ide.ActiveFile() != "main.go" {
+		if zz := m.zones.Get(ide.TabCloseZoneID()); zz != nil {
+			t.Logf("DEBUG zone at click time: %+v", *zz)
+		}
+		t.Logf("DEBUG tabs=%q active=%q dirty=%v", m.ide.Tabs(), m.ide.ActiveFile(), m.ide.AnyDirty())
+		rows := strings.Split(m.View(), "\n")
+		for i, r := range rows[:min(8, len(rows))] {
+			t.Logf("DEBUG row %d: %q", i, r)
+		}
 		t.Fatalf("✕ should close util.go, got %d tabs, active %q", len(tabs), m.ide.ActiveFile())
 	}
 
