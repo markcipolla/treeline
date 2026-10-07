@@ -300,7 +300,7 @@ func (m *Model) scrollGitDiff(delta int) {
 	w, h := m.gitContentSize()
 	listH, _ := m.gitFilesLayout(w, h)
 	m.gitDiffScroll = clampScroll(m.gitDiffScroll+delta,
-		len(strings.Split(m.gitDiff, "\n")), h-listH-1)
+		len(diffRows(m.gitDiff, w)), h-listH-1)
 }
 
 // revealGitSel scrolls the active column just far enough to show the selected
@@ -1066,7 +1066,7 @@ func (m Model) gitModeContent(w, h int) (string, string) {
 	if m.gitDiff == "" {
 		b.WriteString(dimStyle.Render("(no diff)"))
 	} else {
-		lines := strings.Split(m.gitDiff, "\n")
+		lines := diffRows(m.gitDiff, w)
 		rows := h - listH - 1 // what is left under the picker and its rule
 		off := clampScroll(m.gitDiffScroll, len(lines), rows)
 		b.WriteString(strings.Join(lines[off:], "\n"))
