@@ -154,6 +154,16 @@ func legacyPath() (string, error) {
 	return filepath.Join(dir, "treeline", "config.json"), nil
 }
 
+// Dir is the directory config.json lives in, where treeline keeps its other
+// small state files too.
+func Dir() (string, error) {
+	p, err := path()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Dir(p), nil
+}
+
 // PathHint returns the config path for display in messages, best-effort.
 func PathHint() string {
 	p, err := path()

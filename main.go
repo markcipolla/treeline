@@ -22,6 +22,7 @@ import (
 	"github.com/markcipolla/treeline/internal/linear"
 	"github.com/markcipolla/treeline/internal/tmux"
 	"github.com/markcipolla/treeline/internal/ui"
+	"github.com/markcipolla/treeline/internal/update"
 )
 
 // version is stamped by release builds (-ldflags "-X main.version=…");
@@ -135,6 +136,8 @@ func main() {
 		fmt.Fprintf(os.Stderr, "warning: could not update .git/info/exclude: %v\n", err)
 	}
 
+	update.Check(version)
+
 	p := tea.NewProgram(ui.New(cfg, root), tea.WithAltScreen(), tea.WithMouseCellMotion())
 	final, err := p.Run()
 	if err != nil {
@@ -153,6 +156,10 @@ func main() {
 				fmt.Fprintln(os.Stderr, `tip: eval "$(treeline shell-init)" in your .zshrc, then use "tl" to cd automatically`)
 			}
 		}
+	}
+
+	if n := update.Notice(version); n != "" {
+		fmt.Fprintln(os.Stderr, n)
 	}
 }
 
