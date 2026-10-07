@@ -60,6 +60,10 @@ jobs:
       - name: go build
         run: go build ./...
 
+      - name: DEBUG tab close flake
+        continue-on-error: true
+        run: go test -count=30 -failfast -run TestIDETabCloseClick ./internal/ui/
+
       - name: go test
         run: go test -count=1 ./...
 
