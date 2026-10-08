@@ -82,12 +82,27 @@ an issue are grouped at the bottom.
 | `enter` | issue without worktree | create worktree for it |
 | `v` | issue row | issue details (scrollable) |
 | `n` | — | manual entry: issue key or free-form branch |
+| `ctrl+r` | manual entry | review a pull request (see [below](#reviewing-a-pull-request)) |
 | `d` | row with worktree | remove worktree (`y` keep branch, `b` delete branch too; locked worktrees ask again, see [below](#locked-worktrees)) |
 | `/` | — | filter the table |
 | `r` | — | refresh issues, worktrees, and CI |
 | `a` | — | connect / reconnect Linear |
 | `g` | — | connect GitHub (CI) |
 | `q` / `ctrl+c` | — | quit |
+
+### Reviewing a pull request
+
+On the new-worktree screen (`n`) type a pull request — `#123`, its URL, its
+branch name, or anything else to search open PRs by (an issue key, say) — and
+press `ctrl+r` (or click **review PR**). Treeline finds the PR with the
+[gh CLI](https://cli.github.com), fetches its head commit as a local branch
+(so a fork's PR works the same as one pushed to the repo), checks it out in a
+worktree, and opens the agent pane with the review already asked:
+
+```
+Review pull request #123 — <title> (<url>). Read the diff with
+`gh pr diff 123`, look for correctness bugs first, then report what you find.
+```
 
 ### Locked worktrees
 

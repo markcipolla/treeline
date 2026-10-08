@@ -130,6 +130,9 @@ type Model struct {
 	// manual entry
 	manualInput   textinput.Model
 	fetchingIssue bool
+	fetchingPR    bool              // a pull request lookup is in flight
+	pendPR        *github.PR        // PR the worktree being created is a review of
+	agentPrompt   map[string]string // first prompt the agent pane gets, by worktree
 
 	// workspace-wide issue search (live, debounced)
 	searchInput   textinput.Model
@@ -326,6 +329,7 @@ func New(cfg *config.Config, root string) Model {
 		seamDrag:      map[int][]int{},
 		dragSeam:      -1,
 		terms:         map[string]*claudeSession{},
+		agentPrompt:   map[string]string{},
 		termTabs:      map[string][]*termTab{},
 		termSel:       map[string]int{},
 		termScanned:   map[string]bool{},
@@ -334,7 +338,7 @@ func New(cfg *config.Config, root string) Model {
 		help:          help.New(),
 		spinner:       spinner.New(spinner.WithSpinner(spinner.MiniDot), spinner.WithStyle(okStyle)),
 		branchInput:   newInput(""),
-		manualInput:   newInput("LMAP-142 or a/full/branch-name"),
+		manualInput:   newInput("LMAP-142, a/full/branch-name or #123"),
 		authInputs:    authInputs,
 		loadingWT:     true,
 		loadingIssues: cfg.Linear.Token().Usable(),
@@ -739,7 +743,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case createdMsg:
 		if msg.err != nil {
 			m.err = msg.err
-			m.screen = scrEditBranch
+			if m.pendPR != nil {
+				m.pendPR = nil
+				m.screen = scrManual
+			} else {
+				m.screen = scrEditBranch
+			}
 			return m, nil
 		}
 		m.createdPath = msg.path
@@ -758,7 +767,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					scriptEnv(repo.name, msg.path, msg.branchName, m.pendKey)))
 			}
 		}
+		if pr := m.pendPR; pr != nil {
+			m.pendPR = nil
+			m.agentPrompt[msg.path] = reviewPrompt(*pr)
+			// skip the "created" screen: the point of a review worktree is
+			// the agent pane, which starts the agent on that prompt
+			mm, cmd := m.openWorktree(msg.path)
+			m = mm.(Model)
+			cmds = append(cmds, cmd)
+		}
 		return m, tea.Batch(cmds...)
+
+	case prFoundMsg:
+		m.fetchingPR = false
+		if msg.err != nil {
+			m.err = msg.err
+			m.screen = scrManual
+			return m, nil
+		}
+		m.pendKey, m.pendTitle = "", ""
+		if wt := m.worktreeForBranch(msg.pr.HeadRefName); wt != nil {
+			// already checked out: open it and ask for the review there
+			m.agentPrompt[wt.Path] = reviewPrompt(*msg.pr)
+			return m.openWorktree(wt.Path)
+		}
+		m.pendPR = msg.pr
+		m.screen = scrCreating
+		return m, reviewWorktreeCmd(m.pendRepo.path, *msg.pr)
 
 	case scriptDoneMsg:
 		m.setupBusy = false
@@ -1498,7 +1533,7 @@ func (m Model) backFromEdit() (tea.Model, tea.Cmd) {
 }
 
 func (m Model) submitManual() (tea.Model, tea.Cmd) {
-	if m.fetchingIssue {
+	if m.fetchingIssue || m.fetchingPR {
 		return m, nil
 	}
 	v := strings.TrimSpace(m.manualInput.Value())
@@ -1521,6 +1556,23 @@ func (m Model) submitManual() (tea.Model, tea.Cmd) {
 	m.pendTitle = ""
 	m.branchInput.SetValue(v)
 	return m.pickRepoThenEdit()
+}
+
+// submitReview takes what was typed as a pull request to review: treeline
+// finds it, checks its branch out in a worktree, and hands the agent the
+// review as its opening prompt.
+func (m Model) submitReview() (tea.Model, tea.Cmd) {
+	if m.fetchingPR || m.fetchingIssue {
+		return m, nil
+	}
+	if strings.TrimSpace(m.manualInput.Value()) == "" {
+		return m, nil
+	}
+	// ponytail: the primary repo answers the lookup — with several registered
+	// there is no telling which one a bare PR number belongs to
+	m.pendRepo = m.repos[0]
+	m.fetchingPR = true
+	return m, findPRCmd(m.pendRepo.path, m.manualInput.Value())
 }
 
 // ---- workspace-wide issue search ----
@@ -2054,13 +2106,33 @@ func (m *Model) ensureTerm() tea.Cmd {
 		return nil
 	}
 	cols, rows := m.termSize()
-	s, err := startTerm(dir, cols, rows, m.cfg.Persist(), m.cfg.Agent())
+	agent := m.cfg.Agent()
+	if p := m.agentPrompt[dir]; p != "" {
+		// a queued prompt is the agent's first argument, so claude (or
+		// whatever is configured) opens with it already asked
+		delete(m.agentPrompt, dir)
+		agent += " " + shQuote(p)
+	}
+	s, err := startTerm(dir, cols, rows, m.cfg.Persist(), agent)
 	if err != nil {
 		m.err = err
 		return nil
 	}
 	m.terms[dir] = s
 	return waitClaudeTerm(s)
+}
+
+// reviewPrompt is what the agent is asked when a review worktree opens.
+func reviewPrompt(pr github.PR) string {
+	return fmt.Sprintf("Review pull request #%d — %s (%s). Read the diff with "+
+		"`gh pr diff %d`, look for correctness bugs first, then report what you find.",
+		pr.Number, pr.Title, pr.URL, pr.Number)
+}
+
+// shQuote wraps a string for `sh -c`: single quotes, with any single quote in
+// it spliced out and back in.
+func shQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // termSize is the claude pane's inner grid, a column in from the border.
@@ -2585,12 +2657,14 @@ func (m Model) keyDetail(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) keyManual(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch k.String() {
 	case "esc":
-		if !m.fetchingIssue {
+		if !m.fetchingIssue && !m.fetchingPR {
 			m.screen = scrMain
 		}
 		return m, nil
 	case "enter":
 		return m.submitManual()
+	case "ctrl+r":
+		return m.submitReview()
 	}
 	var cmd tea.Cmd
 	m.manualInput, cmd = m.manualInput.Update(k)
@@ -3347,8 +3421,10 @@ func (m Model) handleClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		switch {
 		case m.clicked(msg, "btn:continue"):
 			return m.submitManual()
+		case m.clicked(msg, "btn:review"):
+			return m.submitReview()
 		case m.clicked(msg, "btn:back"):
-			if !m.fetchingIssue {
+			if !m.fetchingIssue && !m.fetchingPR {
 				m.screen = scrMain
 			}
 		}

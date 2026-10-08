@@ -43,6 +43,11 @@ type createdMsg struct {
 	root       string
 }
 
+type prFoundMsg struct {
+	pr  *github.PR
+	err error
+}
+
 type removedMsg struct {
 	err  error
 	warn string
@@ -271,6 +276,29 @@ func createWorktreeCmd(root, name, base string) tea.Cmd {
 			return createdMsg{root: root, err: err}
 		}
 		return createdMsg{root: root, path: abs, branchName: name}
+	}
+}
+
+// findPRCmd resolves what the user typed into a pull request.
+func findPRCmd(dir, ref string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		pr, err := github.FindPR(ctx, dir, ref)
+		return prFoundMsg{pr: pr, err: err}
+	}
+}
+
+// reviewWorktreeCmd checks a pull request out in a worktree of its own: the
+// head branch, fetched first when it isn't local yet.
+func reviewWorktreeCmd(root string, pr github.PR) tea.Cmd {
+	return func() tea.Msg {
+		if !gitx.BranchExists(root, pr.HeadRefName) {
+			if err := gitx.FetchPR(root, pr.Number, pr.HeadRefName); err != nil {
+				return createdMsg{root: root, err: err}
+			}
+		}
+		return createWorktreeCmd(root, pr.HeadRefName, "")()
 	}
 }
 
