@@ -167,7 +167,10 @@ func TestIDEDividerRunsFullHeight(t *testing.T) {
 // collapses, and the shape holds after release.
 func TestSeamDragResizesPanes(t *testing.T) {
 	m := newTestModel(t, 220)
-	za := awaitZone(t, m, "pane:claude")
+	// a seam is the gap between two pane zones, so both have to have landed:
+	// panes are rendered left to right and stored in that order, so waiting
+	// on the right-hand one waits for the pair
+	za := awaitZone(t, m, "pane:claude", "pane:ide")
 	before := m.layout()
 
 	seamX, y := za.EndX+1, za.StartY+2
