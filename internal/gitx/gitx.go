@@ -180,6 +180,13 @@ func BranchExists(root, name string) bool {
 	return err == nil
 }
 
+// FetchPR brings a pull request's head commit in as a local branch, so a PR
+// from a fork is checked out the same way as one pushed to this repo.
+func FetchPR(root string, number int, branchName string) error {
+	_, err := run(root, "fetch", "origin", fmt.Sprintf("pull/%d/head:%s", number, branchName))
+	return err
+}
+
 // Add creates a worktree at dir (relative to root). When createBranch is
 // true a new branch is created from base; otherwise the existing branch is
 // checked out.

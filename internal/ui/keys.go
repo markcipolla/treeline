@@ -21,6 +21,7 @@ var (
 	keyCancel    = key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel"))
 	keyChoose    = key.NewBinding(key.WithKeys("up", "down"), key.WithHelp("↑/↓", "choose"))
 	keyConfirm   = key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "continue"))
+	keyReview    = key.NewBinding(key.WithKeys("ctrl+r"), key.WithHelp("ctrl+r", "review PR"))
 	keyDoIt      = key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "create"))
 	keyChoose2   = key.NewBinding(key.WithKeys("left", "right"), key.WithHelp("←/→", "choose"))
 	keyConfirm2  = key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "confirm"))

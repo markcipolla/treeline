@@ -92,6 +92,17 @@ func (m Model) worktreeForKey(key string) *gitx.Worktree {
 	return nil
 }
 
+// worktreeForBranch finds the worktree a branch is checked out in.
+func (m Model) worktreeForBranch(name string) *gitx.Worktree {
+	for i := range m.wts {
+		wt := &m.wts[i]
+		if !wt.IsPrimary && !wt.Prunable && wt.Branch == name {
+			return wt
+		}
+	}
+	return nil
+}
+
 // branchForKey finds an existing branch already carrying the issue key in
 // any operating repo — local first, then remote-tracking.
 func (m Model) branchForKey(key string) (root, local, remote string) {

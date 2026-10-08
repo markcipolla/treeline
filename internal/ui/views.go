@@ -576,16 +576,21 @@ func renderIssueDetail(is linear.Issue, width int) string {
 func (m Model) viewManual() string {
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("New worktree") + "\n\n")
-	b.WriteString("Enter a Linear issue key or a full branch name:\n\n")
+	b.WriteString("Enter a Linear issue key, a branch name, or a pull request:\n\n")
 	b.WriteString(m.manualInput.View() + "\n\n")
+	b.WriteString(dimStyle.Render("review a PR (#123, a URL, a branch) in a worktree of its own") + "\n\n")
 	if m.fetchingIssue {
 		b.WriteString(m.spinner.View() + " fetching " + m.pendKey + " from Linear…\n\n")
 	}
+	if m.fetchingPR {
+		b.WriteString(m.spinner.View() + " finding the pull request…\n\n")
+	}
 	b.WriteString(m.buttonRow(
 		m.button("btn:continue", "continue", true),
+		m.button("btn:review", "review PR", false),
 		m.button("btn:back", "back", false),
 	) + "\n\n")
-	b.WriteString(m.statusOrHelp([]key.Binding{keyConfirm, keyBack}))
+	b.WriteString(m.statusOrHelp([]key.Binding{keyConfirm, keyReview, keyBack}))
 	return b.String()
 }
 

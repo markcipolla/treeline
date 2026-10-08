@@ -4,6 +4,7 @@
 package github
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -241,4 +242,68 @@ func postForm(ctx context.Context, u string, form url.Values) ([]byte, error) {
 	}
 	defer resp.Body.Close()
 	return io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+}
+
+// PR is the pull request a review worktree is built from.
+type PR struct {
+	Number      int    `json:"number"`
+	Title       string `json:"title"`
+	HeadRefName string `json:"headRefName"`
+	URL         string `json:"url"`
+}
+
+const prFields = "number,title,headRefName,url"
+
+// FindPR resolves a pull request from whatever the user typed: a number,
+// "#123", a URL, a branch name, or free text (an issue key, say) matched
+// against open PRs. It shells out to gh — the CLI treeline already leans on
+// for tokens — so its auth and host config apply.
+func FindPR(ctx context.Context, dir, ref string) (*PR, error) {
+	ref = strings.TrimPrefix(strings.TrimSpace(ref), "#")
+	if ref == "" {
+		return nil, errors.New("no pull request given")
+	}
+	// gh pr view takes a number, URL or branch; anything else errors and the
+	// search below gets its turn.
+	if out, err := gh(ctx, dir, "pr", "view", ref, "--json", prFields); err == nil {
+		var pr PR
+		if json.Unmarshal(out, &pr) == nil && pr.Number != 0 {
+			return &pr, nil
+		}
+	}
+	out, err := gh(ctx, dir, "pr", "list", "--search", ref, "--limit", "1", "--json", prFields)
+	if err != nil {
+		return nil, err
+	}
+	var prs []PR
+	if err := json.Unmarshal(out, &prs); err != nil || len(prs) == 0 {
+		return nil, fmt.Errorf("no open pull request matching %q", ref)
+	}
+	return &prs[0], nil
+}
+
+func gh(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "gh", args...)
+	cmd.Dir = dir
+	var out, errb bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errb
+	if err := cmd.Run(); err != nil {
+		if errors.Is(err, exec.ErrNotFound) {
+			return nil, errors.New("the gh CLI is needed to find pull requests — brew install gh")
+		}
+		msg := strings.TrimSpace(errb.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		return nil, fmt.Errorf("gh %s: %s", strings.Join(args, " "), firstLine(msg))
+	}
+	return out.Bytes(), nil
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
 }
