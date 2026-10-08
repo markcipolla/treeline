@@ -179,11 +179,13 @@ func TestCreatedScreenEntryPoints(t *testing.T) {
 // every frame.
 //
 // The goroutine stores a frame's zones in the order the renderer closed their
-// markers, so a nested zone lands before the one wrapping it: waiting on a ✕
-// inside a pane says nothing about whether that pane's own zone has arrived.
-// A click that the app gates on the outer zone — handleClick won't look inside
-// the ide pane until the click is in "pane:ide" — therefore has to wait for
-// both, so name the enclosing zones too, outermost last.
+// markers — nested before enclosing, left pane before right — so one zone
+// having bounds says nothing about the rest of the frame. That only matters
+// where a missing zone answers differently from a present one: a handler that
+// needs the pointer *inside* another zone (handleClick won't look inside the
+// ide pane until the click is in "pane:ide") or *between* two of them (a seam
+// is the gap between neighbouring panes). Name those zones here as well, in
+// render order, and the wait covers them.
 func awaitZone(t *testing.T, m Model, ids ...string) *zone.ZoneInfo {
 	t.Helper()
 	var first *zone.ZoneInfo
