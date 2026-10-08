@@ -232,20 +232,15 @@ func TestIDETabCloseClick(t *testing.T) {
 	m.ideReady().OpenFile("main.go")
 	m.ideReady().OpenFile(filepath.Join("sub", "util.go"))
 
-	z := awaitZone(t, m, ide.TabCloseZoneID())
+	// the ✕ sits inside the ide pane, and handleClick only looks inside a
+	// pane it has bounds for: wait for the enclosing zone too, or the click
+	// lands in the gap where the ✕ has been stored and "pane:ide" hasn't
+	z := awaitZone(t, m, ide.TabCloseZoneID(), "pane:ide")
 	click := tea.MouseMsg{X: z.StartX, Y: z.StartY,
 		Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease}
 	mm, _ := m.Update(click)
 	m = mm.(Model)
 	if tabs := m.ide.Tabs(); len(tabs) != 1 || m.ide.ActiveFile() != "main.go" {
-		// This has flaked on CI under load. The zone manager stores bounds
-		// off a background goroutine, so the suspect is the ✕ having moved
-		// or gone missing between the read above and the click — log both
-		// sides rather than leaving the next failure as mysterious as the
-		// last one.
-		t.Logf("zone read: %+v", *z)
-		t.Logf("zone at click time: %+v", m.zones.Get(ide.TabCloseZoneID()))
-		t.Logf("dirty: %v", m.ide.AnyDirty())
 		t.Fatalf("✕ should close util.go, got %d tabs, active %q", len(tabs), m.ide.ActiveFile())
 	}
 
