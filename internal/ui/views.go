@@ -103,6 +103,10 @@ func (m Model) viewHeader() string {
 			dot = errStyle.Render("●")
 		}
 		right = dot + " " + metaStyle.Render(label)
+		// re-run the OAuth cycle: tokens expire, and accounts get switched
+		if m.screen == scrMain {
+			right += " " + m.button("btn:reauth", "↻", false)
+		}
 	}
 	w := m.width - 4 // docStyle pads 2 each side
 	if w < 20 {

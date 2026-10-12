@@ -171,6 +171,7 @@ func TestSeamDragResizesPanes(t *testing.T) {
 	// panes are rendered left to right and stored in that order, so waiting
 	// on the right-hand one waits for the pair
 	za := awaitZone(t, m, "pane:claude", "pane:ide")
+	zb := m.zones.Get("pane:ide")
 	before := m.layout()
 
 	seamX, y := za.EndX+1, za.StartY+2
@@ -198,15 +199,18 @@ func TestSeamDragResizesPanes(t *testing.T) {
 	}
 
 	// the app renders between updates, refreshing the zones; the test has to
-	// do the same before grabbing the moved seam again
+	// do the same before grabbing the moved seam again. Zones land one at a
+	// time, so both sides of the seam have to show the drag — seamAt needs
+	// the pair, and a stale right-hand pane swallows the next press.
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		m.View()
-		if z := m.zones.Get("pane:claude"); z != nil && z.EndX == za.EndX+8 {
+		zc, zi := m.zones.Get("pane:claude"), m.zones.Get("pane:ide")
+		if zc != nil && zi != nil && zc.EndX == za.EndX+8 && zi.StartX == zb.StartX+8 {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("balance zone never caught up with the drag")
+			t.Fatal("the seam's zones never caught up with the drag")
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -215,6 +219,9 @@ func TestSeamDragResizesPanes(t *testing.T) {
 	// hauling the seam far past the floor pins the pane at minDragCol
 	mm, _ = m.Update(tea.MouseMsg{X: seamX, Y: y, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
 	m = mm.(Model)
+	if m.dragSeam < 0 {
+		t.Fatal("press on the moved seam did not grab it")
+	}
 	mm, _ = m.Update(tea.MouseMsg{X: 0, Y: y, Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion})
 	m = mm.(Model)
 	if got := m.layout().claude.w; got != minDragCol {

@@ -3293,7 +3293,7 @@ func (m Model) handleClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	switch m.screen {
 	case scrMain:
 		switch {
-		case m.clicked(msg, "btn:connect"):
+		case m.clicked(msg, "btn:connect"), m.clicked(msg, "btn:reauth"):
 			return m.startAuth()
 		case m.clicked(msg, "btn:new"):
 			return m.openManual()
