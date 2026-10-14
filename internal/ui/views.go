@@ -58,7 +58,14 @@ func (m Model) View() string {
 	case scrRepoEdit:
 		body = m.viewRepoEdit()
 	}
-	return m.zones.Scan(docStyle.Render(m.viewHeader() + "\n\n" + body))
+	frame := docStyle.Render(m.viewHeader() + "\n\n" + body)
+	// a frame taller than the terminal scrolls the alt screen out from under
+	// the renderer, and every later repaint lands a row or two off — stale
+	// rows stuck above the header until something forces a full redraw
+	if m.height > 0 {
+		frame = lipgloss.NewStyle().MaxHeight(m.height).Render(frame)
+	}
+	return m.zones.Scan(frame)
 }
 
 func (m Model) viewGitHub() string {
@@ -189,7 +196,10 @@ func (m Model) statusOrHelp(bindings []key.Binding) string {
 		w = 20
 	}
 	if m.err != nil {
-		return maxWidthStyle(w).Render(errStyle.Render("✗ " + m.err.Error()))
+		// one line, whatever the error: a multi-line message would push the
+		// frame past the terminal's last row
+		msg := strings.ReplaceAll(m.err.Error(), "\n", " ")
+		return maxWidthStyle(w).Render(errStyle.Render("✗ " + msg))
 	}
 	return maxWidthStyle(w).Render(m.help.ShortHelpView(bindings))
 }
@@ -210,7 +220,7 @@ func (m Model) viewMain() string {
 	// the counts, the new/search buttons and the auth state all live in the
 	// header (see summaryCluster) — the panes get the height they occupied
 	filterLine := ""
-	if m.filtering || m.filterInput.Value() != "" {
+	if m.filterShown() {
 		filterLine = m.filterInput.View() + "\n"
 	}
 
