@@ -54,6 +54,18 @@ const (
 	minWorkCol = 34
 )
 
+// filterShown reports whether the filter input takes a line above the panes:
+// while it has focus, and after, for as long as a filter is set.
+func (m Model) filterShown() bool { return m.filtering || m.filterInput.Value() != "" }
+
+// filterRows is the height the filter line costs the panes below it.
+func (m Model) filterRows() int {
+	if m.filterShown() {
+		return 1
+	}
+	return 0
+}
+
 func (m Model) layoutMode() int {
 	switch {
 	case m.width >= minFour:
@@ -95,7 +107,7 @@ func (m Model) layout() layout {
 		w = 40
 	}
 	// doc frame, header + divider, help, spare
-	avail := m.height - 6
+	avail := m.height - 6 - m.filterRows()
 	if avail < 12 {
 		avail = 12
 	}
@@ -129,7 +141,7 @@ func (m Model) layout() layout {
 		l.term = box{cols[4], avail}
 
 	default:
-		h := m.height - docStyle.GetVerticalFrameSize() - 4
+		h := m.height - docStyle.GetVerticalFrameSize() - 4 - m.filterRows()
 		if h < 3 {
 			h = 3
 		}
