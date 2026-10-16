@@ -114,63 +114,39 @@ func TestOpenWorktreeBeforeListRefresh(t *testing.T) {
 	}
 }
 
-// TestCreatedScreenEntryPoints drives the created screen the way a user does —
-// the enter key and a click on "jump in" — rather than calling openWorktree
-// directly, so a call site reverting to jumpTo (exiting the app instead of
-// opening the worktree in the panel) is caught.
-func TestCreatedScreenEntryPoints(t *testing.T) {
-	setup := func(t *testing.T) Model {
-		m := newTestModel(t, 200)
-		m.screen = scrCreated
-		m.createdPath = m.wts[1].Path
-		m.createdBranch = "feature/lab-2-second"
-		return m
+// TestCreatedGoesStraightIn: a finished creation opens the worktree itself —
+// no confirmation screen, no "jump in" button to press.
+func TestCreatedGoesStraightIn(t *testing.T) {
+	m := newTestModel(t, 200)
+	fresh := m.root + "/.worktrees/third"
+
+	mm, _ := m.Update(createdMsg{path: fresh, branchName: "feature/lab-3-third", root: m.root})
+	got := mm.(Model)
+
+	if got.screen != scrMain {
+		t.Errorf("screen = %v, want scrMain", got.screen)
 	}
+	// the list reload is still in flight, so the selection is parked for it
+	if got.pendSelect != fresh {
+		t.Errorf("pendSelect = %q, want %q", got.pendSelect, fresh)
+	}
+	if got.JumpPath() != "" {
+		t.Errorf("panel layout exited the app with jump path %q", got.JumpPath())
+	}
+}
 
-	t.Run("enter", func(t *testing.T) {
-		m := setup(t)
-		mm, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-		got := mm.(Model)
-		if got.JumpPath() != "" {
-			t.Errorf("enter exited the app with jump path %q", got.JumpPath())
-		}
-		if got.screen != scrMain || got.pane != paneClaude {
-			t.Errorf("screen=%v pane=%d, want scrMain and paneClaude", got.screen, got.pane)
-		}
-		if p := got.claudeDir(); p != m.createdPath {
-			t.Errorf("claudeDir = %q, want %q", p, m.createdPath)
-		}
-	})
+// Without room for the panels, going in means exiting so the shell wrapper
+// cd's into the new worktree.
+func TestCreatedGoesStraightInNarrow(t *testing.T) {
+	m := newTestModel(t, 80)
+	fresh := m.root + "/.worktrees/third"
 
-	t.Run("jump in button", func(t *testing.T) {
-		m := setup(t)
-		z := awaitZone(t, m, "btn:jump")
-		// handleClick only runs on release, the way a real click arrives
-		click := tea.MouseMsg{X: z.StartX, Y: z.StartY, Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease}
-		if !m.clicked(click, "btn:jump") {
-			t.Fatalf("synthesized click at %d,%d misses btn:jump", click.X, click.Y)
-		}
-		mm, _ := m.Update(click)
-		got := mm.(Model)
-		if got.JumpPath() != "" {
-			t.Errorf("click exited the app with jump path %q", got.JumpPath())
-		}
-		if got.screen != scrMain || got.pane != paneClaude {
-			t.Errorf("screen=%v pane=%d, want scrMain and paneClaude", got.screen, got.pane)
-		}
-	})
+	mm, _ := m.Update(createdMsg{path: fresh, branchName: "feature/lab-3-third", root: m.root})
+	got := mm.(Model)
 
-	t.Run("esc goes back without opening", func(t *testing.T) {
-		m := setup(t)
-		mm, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
-		got := mm.(Model)
-		if got.screen != scrMain {
-			t.Errorf("screen = %v, want scrMain", got.screen)
-		}
-		if got.JumpPath() != "" || got.pendSelect != "" {
-			t.Errorf("esc opened a worktree: jump=%q pend=%q", got.JumpPath(), got.pendSelect)
-		}
-	})
+	if got.JumpPath() != fresh {
+		t.Errorf("JumpPath = %q, want %q", got.JumpPath(), fresh)
+	}
 }
 
 // awaitZone renders the model and waits for the first zone's bounds, which it

@@ -37,7 +37,6 @@ const (
 	scrTypePick
 	scrEditBranch
 	scrCreating
-	scrCreated
 	scrDeleteConfirm
 	scrAuth
 	scrAuthWait
@@ -229,9 +228,11 @@ type Model struct {
 	deviceCode *github.DeviceCode
 	ghCancel   context.CancelFunc
 
-	createdPath   string
 	createdBranch string
 	jumpPath      string
+	// pendJump is a worktree to cd into once its setup script finishes:
+	// jumping out ends the process, which would kill the script mid-run.
+	pendJump string
 	// pendSelect is a worktree we want selected but which the worktree list
 	// hasn't caught up with yet (a just-created one); worktreesMsg retries it.
 	pendSelect string
@@ -751,9 +752,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		m.createdPath = msg.path
 		m.createdBranch = msg.branchName
-		m.screen = scrCreated
 		m.loadingWT = true
 		cmds := []tea.Cmd{m.loadWorktrees()}
 		if repo := m.repoFor(msg.root); repo.setup != "" {
@@ -770,13 +769,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if pr := m.pendPR; pr != nil {
 			m.pendPR = nil
 			m.agentPrompt[msg.path] = reviewPrompt(*pr)
-			// skip the "created" screen: the point of a review worktree is
-			// the agent pane, which starts the agent on that prompt
-			mm, cmd := m.openWorktree(msg.path)
-			m = mm.(Model)
-			cmds = append(cmds, cmd)
 		}
-		return m, tea.Batch(cmds...)
+		// straight in: the worktree itself is the confirmation. A headless
+		// setup script is the exception in the table layout, where going in
+		// means exiting the app — that waits for scriptDoneMsg.
+		if m.setupBusy && !m.threePane() {
+			m.pendJump = msg.path
+			m.screen = scrCreating
+			return m, tea.Batch(cmds...)
+		}
+		mm, cmd := m.openWorktree(msg.path)
+		m = mm.(Model)
+		return m, tea.Batch(append(cmds, cmd)...)
 
 	case prFoundMsg:
 		m.fetchingPR = false
@@ -799,21 +803,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.setupBusy = false
 		if msg.err != nil {
 			m.err = fmt.Errorf("setup script: %v — %s", msg.err, lastLine(msg.out))
+			// the error is worth seeing before leaving for the shell
+			m.pendJump, m.screen = "", scrMain
+			return m, nil
+		}
+		if p := m.pendJump; p != "" {
+			m.pendJump = ""
+			return m.jumpTo(p)
 		}
 		return m, nil
 
 	case removedMsg:
 		m.removing = false
 		if msg.err != nil {
-			// A lock is worth a second ask rather than a dead end: keep the
-			// modal up, explain what holds the worktree, and offer to break it.
-			if errors.Is(msg.err, gitx.ErrLocked) && !m.delForce && m.delTarget != nil {
-				m.delForce, m.delErr, m.delFocus = true, msg.err, 2 // default to cancel
-				m.screen = scrDeleteConfirm
-				return m, nil
-			}
-			m.err = msg.err
 			m.delErr = msg.err
+			// A failed removal is the one time the modal comes up: it explains
+			// what went wrong and offers the attempt again. A lock escalates —
+			// forcing breaks it, and that deserves its own warning.
+			if errors.Is(msg.err, gitx.ErrLocked) && !m.delForce && m.delTarget != nil {
+				m.delForce, m.delFocus = true, 2 // default to cancel
+			} else {
+				m.err = msg.err
+				m.delFocus = 2
+			}
+			if m.delTarget != nil {
+				m.screen = scrDeleteConfirm
+			}
 			return m, nil
 		}
 		if msg.warn != "" {
@@ -1773,14 +1788,23 @@ func (m Model) startGitHub() (tea.Model, tea.Cmd) {
 	return m, requestDeviceCodeCmd(m.ghCtx(), m.ghClientID())
 }
 
+// startDelete removes the selected worktree there and then — no confirmation
+// screen, the modal is for problems. A dirty worktree is the exception: its
+// uncommitted work is discarded, and that is the one removal with nothing to
+// undo it.
 func (m Model) startDelete() (tea.Model, tea.Cmd) {
-	if ref := m.selectedRef(); ref.wt != nil && !ref.wt.IsPrimary {
-		m.delTarget = ref.wt
-		m.delFocus = 0
-		m.delForce, m.delErr = false, nil
-		m.screen = scrDeleteConfirm
+	ref := m.selectedRef()
+	if ref.wt == nil || ref.wt.IsPrimary {
+		return m, nil
 	}
-	return m, nil
+	m.delTarget = ref.wt
+	m.delFocus = 0
+	m.delForce, m.delErr = false, nil
+	if ref.wt.Dirty {
+		m.screen = scrDeleteConfirm
+		return m, nil
+	}
+	return m.doRemove(false)
 }
 
 func (m Model) branchPreview(typ string) string {
@@ -1840,8 +1864,6 @@ func (m Model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.keyTypePick(k)
 	case scrEditBranch:
 		return m.keyEditBranch(k)
-	case scrCreated:
-		return m.keyCreated(k)
 	case scrDeleteConfirm:
 		return m.keyDeleteConfirm(k)
 	case scrAuth:
@@ -2704,17 +2726,6 @@ func (m Model) keyEditBranch(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m Model) keyCreated(k tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch k.String() {
-	case "enter":
-		return m.openWorktree(m.createdPath)
-	case "esc", "q":
-		m.screen = scrMain
-		return m, nil
-	}
-	return m, nil
-}
-
 func (m Model) keyDeleteConfirm(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.removing {
 		return m, nil
@@ -3448,15 +3459,6 @@ func (m Model) handleClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			return m.submitEdit()
 		case m.clicked(msg, "btn:back"):
 			return m.backFromEdit()
-		}
-		return m, nil
-
-	case scrCreated:
-		switch {
-		case m.clicked(msg, "btn:jump"):
-			return m.openWorktree(m.createdPath)
-		case m.clicked(msg, "btn:back"):
-			m.screen = scrMain
 		}
 		return m, nil
 

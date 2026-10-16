@@ -79,11 +79,11 @@ an issue are grouped at the bottom.
 | Key | On | Action |
 | --- | --- | --- |
 | `enter` | row with worktree | jump into worktree (quit + cd with `tl`) |
-| `enter` | issue without worktree | create worktree for it |
+| `enter` | issue without worktree | create worktree for it and go in |
 | `v` | issue row | issue details (scrollable) |
 | `n` | — | manual entry: issue key or free-form branch |
 | `ctrl+r` | manual entry | review a pull request (see [below](#reviewing-a-pull-request)) |
-| `d` | row with worktree | remove worktree (`y` keep branch, `b` delete branch too; locked worktrees ask again, see [below](#locked-worktrees)) |
+| `d` | row with worktree | remove worktree, right away — a modal only comes up if it has uncommitted changes or git refuses (see [below](#locked-worktrees)) |
 | `/` | — | filter the table |
 | `r` | — | refresh issues, worktrees, and CI |
 | `a` | — | connect / reconnect Linear |
@@ -109,9 +109,9 @@ Review pull request #123 — <title> (<url>). Read the diff with
 A worktree can be locked — claude locks the one it is working in, recording
 a reason like `claude session encapsulated-shimmying-sparrow (pid 65825)`.
 Git then refuses to remove it, and needs a second `--force` to be talked out
-of it. The remove modal names the lock before you commit to anything, and if
-git refuses anyway it asks a second time with the buttons relabelled
-`force remove` / `force remove + delete branch`, defaulting to cancel.
+of it. That refusal brings up the remove modal, which names the lock and
+relabels its buttons `force remove` / `force remove + delete branch`,
+defaulting to cancel.
 Forcing pulls the directory out from under whatever holds the lock, so a
 claude session still working in there loses its files.
 

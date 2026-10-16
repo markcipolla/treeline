@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/markcipolla/treeline/internal/config"
 	"github.com/markcipolla/treeline/internal/gitx"
 )
@@ -94,5 +96,45 @@ func TestModalNamesAKnownLock(t *testing.T) {
 	m.removing = false
 	if view := m.viewDeleteConfirm(); !strings.Contains(view, "claude session sparrow") {
 		t.Errorf("modal should name the lock up front, got:\n%s", view)
+	}
+}
+
+// "d" removes straight away: the confirmation screen is gone, and a dirty
+// worktree is the one that still asks because its changes are discarded.
+func TestDeleteRemovesWithoutConfirming(t *testing.T) {
+	m := newTestModel(t, 200)
+	if !m.selectWorktree(m.wts[1].Path) {
+		t.Fatal("could not select the second worktree")
+	}
+	d := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}}
+
+	out, cmd := m.Update(d)
+	got := out.(Model)
+	if got.screen != scrMain {
+		t.Errorf("screen = %v, want the removal to run without a modal", got.screen)
+	}
+	if !got.removing || cmd == nil {
+		t.Errorf("removing=%v cmd=%v, want the removal under way", got.removing, cmd != nil)
+	}
+
+	m.wts[1].Dirty = true
+	m.refreshRows()
+	out, _ = m.Update(d)
+	if got = out.(Model); got.screen != scrDeleteConfirm || got.removing {
+		t.Errorf("screen=%v removing=%v, want a dirty worktree to ask first", got.screen, got.removing)
+	}
+}
+
+// A failed removal is what brings the modal up.
+func TestRemovalFailureOpensTheModal(t *testing.T) {
+	m := deleteModel(t, gitx.Worktree{Path: "/repo/.worktrees/x", Branch: "b"})
+	m.screen = scrMain
+	out, _ := m.Update(removedMsg{err: errors.New("git worktree: fatal: something else")})
+	got := out.(Model)
+	if got.screen != scrDeleteConfirm {
+		t.Fatalf("screen = %v, want the modal to report the failure", got.screen)
+	}
+	if view := got.viewDeleteConfirm(); !strings.Contains(view, "Removing failed") {
+		t.Errorf("modal should say the removal failed, got:\n%s", view)
 	}
 }
