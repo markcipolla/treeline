@@ -36,9 +36,11 @@ func (m Model) View() string {
 	case scrEditBranch:
 		body = m.viewEditBranch()
 	case scrCreating:
-		body = m.spinner.View() + " creating worktree…"
-	case scrCreated:
-		body = m.viewCreated()
+		label := " creating worktree…"
+		if m.setupBusy {
+			label = " running setup script…"
+		}
+		body = m.spinner.View() + label
 	case scrDeleteConfirm:
 		body = m.viewDeleteConfirm()
 	case scrAuth:
@@ -652,25 +654,6 @@ func (m Model) viewEditBranch() string {
 	return b.String()
 }
 
-func (m Model) viewCreated() string {
-	rel, err := filepath.Rel(m.root, m.createdPath)
-	if err != nil {
-		rel = m.createdPath
-	}
-	setupLine := ""
-	if m.setupBusy {
-		setupLine = m.spinner.View() + dimStyle.Render(" running setup script…") + "\n"
-	}
-	content := okStyle.Render("✓ Worktree created") + "\n" + setupLine + "\n" +
-		labelStyle.Render("branch") + " " + m.createdBranch + "\n" +
-		labelStyle.Render("path") + " " + rel + "\n\n" +
-		m.buttonRow(
-			m.button("btn:jump", "jump in", true),
-			m.button("btn:back", "back", false),
-		)
-	return boxStyle.Render(content)
-}
-
 func (m Model) viewDeleteConfirm() string {
 	if m.delTarget == nil {
 		return ""
@@ -678,8 +661,11 @@ func (m Model) viewDeleteConfirm() string {
 	wt := *m.delTarget
 	var b strings.Builder
 	title := "Remove worktree?"
-	if m.delForce {
+	switch {
+	case m.delForce:
 		title = "Force remove locked worktree?"
+	case m.delErr != nil:
+		title = "Removing failed — try again?"
 	}
 	b.WriteString(warnStyle.Render(title) + "\n\n")
 	b.WriteString(labelStyle.Render("branch") + " " + wt.Branch + "\n")
@@ -689,6 +675,10 @@ func (m Model) viewDeleteConfirm() string {
 	}
 	if wt.Dirty {
 		b.WriteString("\n" + warnStyle.Render("⚠ has uncommitted changes — removing will discard them") + "\n")
+	}
+	if m.delErr != nil && !m.delForce {
+		// what went wrong, wrapped: the modal is sized to its content
+		b.WriteString("\n" + errStyle.Width(66).Render(m.delErr.Error()) + "\n")
 	}
 	if m.delForce {
 		// wrapped: the modal is sized to its content, and an unwrapped
