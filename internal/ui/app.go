@@ -1694,11 +1694,15 @@ func (m Model) jumpTo(path string) (tea.Model, tea.Cmd) {
 	return m, tea.Quit
 }
 
+// doRemove runs the removal confirmed in the modal. The modal closes on the
+// confirmation rather than waiting behind a spinner — the removal carries on
+// from the main screen, and only a failure brings the modal back.
 func (m Model) doRemove(deleteBranch bool) (tea.Model, tea.Cmd) {
 	if m.removing || m.delTarget == nil {
 		return m, nil
 	}
 	m.removing = true
+	m.screen = scrMain
 	m.dropSessions(m.delTarget.Path) // nothing should be left running in a dir about to go
 	repo := m.repoFor(m.delTarget.Root)
 	return m, removeWorktreeCmd(*m.delTarget, deleteBranch, m.delForce, repo.cleanup, repo.name)
@@ -1788,23 +1792,14 @@ func (m Model) startGitHub() (tea.Model, tea.Cmd) {
 	return m, requestDeviceCodeCmd(m.ghCtx(), m.ghClientID())
 }
 
-// startDelete removes the selected worktree there and then — no confirmation
-// screen, the modal is for problems. A dirty worktree is the exception: its
-// uncommitted work is discarded, and that is the one removal with nothing to
-// undo it.
 func (m Model) startDelete() (tea.Model, tea.Cmd) {
-	ref := m.selectedRef()
-	if ref.wt == nil || ref.wt.IsPrimary {
-		return m, nil
-	}
-	m.delTarget = ref.wt
-	m.delFocus = 0
-	m.delForce, m.delErr = false, nil
-	if ref.wt.Dirty {
+	if ref := m.selectedRef(); ref.wt != nil && !ref.wt.IsPrimary {
+		m.delTarget = ref.wt
+		m.delFocus = 0
+		m.delForce, m.delErr = false, nil
 		m.screen = scrDeleteConfirm
-		return m, nil
 	}
-	return m.doRemove(false)
+	return m, nil
 }
 
 func (m Model) branchPreview(typ string) string {
@@ -2727,9 +2722,6 @@ func (m Model) keyEditBranch(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) keyDeleteConfirm(k tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if m.removing {
-		return m, nil
-	}
 	switch k.String() {
 	case "esc", "n":
 		m.cancelDelete()
@@ -3469,9 +3461,7 @@ func (m Model) handleClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		case m.clicked(msg, "btn:remove-branch"):
 			return m.doRemove(true)
 		case m.clicked(msg, "btn:cancel"):
-			if !m.removing {
-				m.cancelDelete()
-			}
+			m.cancelDelete()
 		}
 		return m, nil
 

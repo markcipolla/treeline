@@ -169,10 +169,14 @@ func (m Model) summaryCluster(counts, longLabels bool) string {
 		newL, searchL = "+", "⌕"
 	}
 	s += "  " + m.button("btn:new", newL, false) + " " + m.button("btn:search", searchL, false)
-	if m.loadingWT || m.loadingIssues || m.loadingCI {
+	if m.loadingWT || m.loadingIssues || m.loadingCI || m.removing {
 		s += "  " + m.spinner.View()
 		if counts {
-			s += dimStyle.Render(" refreshing…")
+			note := " refreshing…"
+			if m.removing {
+				note = " removing the worktree…"
+			}
+			s += dimStyle.Render(note)
 		}
 	}
 	if !m.authed {
@@ -688,24 +692,20 @@ func (m Model) viewDeleteConfirm() string {
 			"there loses the files it is working on.") + "\n")
 	}
 	b.WriteString("\n")
-	if m.removing {
-		b.WriteString(m.spinner.View() + " removing…")
-	} else {
-		removeLabel, branchLabel := "remove", "remove + delete branch"
-		if m.delForce {
-			removeLabel, branchLabel = "force remove", "force remove + delete branch"
-		}
-		b.WriteString(m.buttonRow(
-			m.button("btn:remove", removeLabel, m.delFocus == 0),
-			m.button("btn:remove-branch", branchLabel, m.delFocus == 1),
-			m.button("btn:cancel", "cancel", m.delFocus == 2),
-		) + "\n\n")
-		remove, removeB := keyRemove, keyRemoveB
-		if m.delForce {
-			remove, removeB = keyForce, keyForceB
-		}
-		b.WriteString(m.statusOrHelp([]key.Binding{keyChoose2, keyConfirm2, remove, removeB, keyCancel}))
+	removeLabel, branchLabel := "remove", "remove + delete branch"
+	if m.delForce {
+		removeLabel, branchLabel = "force remove", "force remove + delete branch"
 	}
+	b.WriteString(m.buttonRow(
+		m.button("btn:remove", removeLabel, m.delFocus == 0),
+		m.button("btn:remove-branch", branchLabel, m.delFocus == 1),
+		m.button("btn:cancel", "cancel", m.delFocus == 2),
+	) + "\n\n")
+	remove, removeB := keyRemove, keyRemoveB
+	if m.delForce {
+		remove, removeB = keyForce, keyForceB
+	}
+	b.WriteString(m.statusOrHelp([]key.Binding{keyChoose2, keyConfirm2, remove, removeB, keyCancel}))
 	return boxStyle.Render(b.String())
 }
 

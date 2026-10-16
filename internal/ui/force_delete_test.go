@@ -99,29 +99,30 @@ func TestModalNamesAKnownLock(t *testing.T) {
 	}
 }
 
-// "d" removes straight away: the confirmation screen is gone, and a dirty
-// worktree is the one that still asks because its changes are discarded.
-func TestDeleteRemovesWithoutConfirming(t *testing.T) {
+// Confirming the removal closes the modal: the worktree goes while the main
+// screen is back up, rather than behind a spinner in the modal.
+func TestConfirmingRemovalReturnsToTheMainScreen(t *testing.T) {
 	m := newTestModel(t, 200)
 	if !m.selectWorktree(m.wts[1].Path) {
 		t.Fatal("could not select the second worktree")
 	}
-	d := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}}
 
-	out, cmd := m.Update(d)
+	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	asked := out.(Model)
+	if asked.screen != scrDeleteConfirm {
+		t.Fatalf("screen = %v, want the removal to be confirmed first", asked.screen)
+	}
+
+	out, cmd := asked.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
 	got := out.(Model)
 	if got.screen != scrMain {
-		t.Errorf("screen = %v, want the removal to run without a modal", got.screen)
+		t.Errorf("screen = %v, want the modal closed on confirmation", got.screen)
 	}
 	if !got.removing || cmd == nil {
 		t.Errorf("removing=%v cmd=%v, want the removal under way", got.removing, cmd != nil)
 	}
-
-	m.wts[1].Dirty = true
-	m.refreshRows()
-	out, _ = m.Update(d)
-	if got = out.(Model); got.screen != scrDeleteConfirm || got.removing {
-		t.Errorf("screen=%v removing=%v, want a dirty worktree to ask first", got.screen, got.removing)
+	if view := got.View(); !strings.Contains(view, "removing the worktree…") {
+		t.Error("the main screen should say a removal is in flight")
 	}
 }
 
