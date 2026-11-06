@@ -517,7 +517,7 @@ func (s *claudeSession) render(focused bool) string {
 		for y := range screen {
 			screen[y] = highlightAbs(sbLen+y, screen[y])
 		}
-		return strings.Join(screen, "\n")
+		return pinClusters(strings.Join(screen, "\n"))
 	}
 
 	clip := maxWidthStyle(s.cols)
@@ -531,7 +531,28 @@ func (s *claudeSession) render(focused bool) string {
 	for len(lines) < s.rows {
 		lines = append(lines, "")
 	}
-	return strings.Join(lines, "\n")
+	return pinClusters(strings.Join(lines, "\n"))
+}
+
+// pinClusters keeps complex grapheme clusters (Sinhala, Devanagari, ZWJ
+// sequences…) from shifting the rest of the line: terminals disagree on
+// how wide those draw, so each is printed inside save/restore cursor and
+// followed by a cursor-forward of the width the emulator gave it. Plain
+// text passes through untouched.
+func pinClusters(s string) string {
+	var b strings.Builder
+	var state byte
+	for len(s) > 0 {
+		seq, w, n, newState := ansi.DecodeSequence(s, state, nil)
+		state = newState
+		if w > 0 && utf8.RuneCountInString(seq) > 1 {
+			b.WriteString("\x1b7" + seq + "\x1b8" + ansi.CUF(w))
+		} else {
+			b.WriteString(seq)
+		}
+		s = s[n:]
+	}
+	return b.String()
 }
 
 // renderCellsLine rebuilds one absolute line from cells, reversing the
