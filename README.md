@@ -146,7 +146,7 @@ another pane has focus and grows back to half the screen when you `ctrl+q`
 into it. As a column it stays full height, so the cards are always in view,
 and it widens when you focus it — far enough to show every column of the
 grid, never so far that the work panes stop being usable. A narrow issues
-column drops the cells it can do without — ASSIGNEE, then REPO, then
+column drops the cells it can do without — PR, then ASSIGNEE, then REPO, then
 WORKTREE and PRIORITY — to keep titles readable.
 
 Every panel draws its own border and they sit flush, so the seam between two

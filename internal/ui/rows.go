@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/markcipolla/treeline/internal/branch"
@@ -70,13 +71,49 @@ func stateRank(stateType string) int {
 	return 4
 }
 
+// linearSegRe matches Linear's own branch style, user/lab-123-slug, where the
+// key leads a segment instead of being one.
+var linearSegRe = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9]*-\d+)(?:-|$)`)
+
+// titleKeyRe finds a key in a PR title ("LAB-12: fix", "[LAB-12] fix").
+// Uppercase only: lowercase words-with-numbers in prose aren't keys.
+var titleKeyRe = regexp.MustCompile(`\b[A-Z][A-Z0-9]*-\d+\b`)
+
 // issueKeyFromBranch extracts an issue key from a branch name following the
-// type/KEY/slug convention (any segment that parses as a key counts).
+// type/KEY/slug convention (any segment that parses as a key counts), or
+// Linear's user/key-slug one.
 func issueKeyFromBranch(name string) string {
-	for _, seg := range strings.Split(name, "/") {
+	segs := strings.Split(name, "/")
+	for _, seg := range segs {
 		if k := branch.ParseIssueKey(seg); k != "" {
 			return k
 		}
+	}
+	for _, seg := range segs {
+		if sm := linearSegRe.FindStringSubmatch(seg); sm != nil {
+			return strings.ToUpper(sm[1])
+		}
+	}
+	return ""
+}
+
+// wtKey is the card a worktree is working on: the key its branch carries,
+// else one its open PR's title names — a review of someone else's branch
+// rarely follows our naming.
+func (m Model) wtKey(wt gitx.Worktree) string {
+	if k := issueKeyFromBranch(wt.Branch); k != "" {
+		return k
+	}
+	if pr, ok := m.prs[wt.Branch]; ok {
+		return titleKeyRe.FindString(pr.Title)
+	}
+	return ""
+}
+
+// prCell is the PR column: the open pull request for the worktree's branch.
+func (m Model) prCell(wt *gitx.Worktree) string {
+	if pr, ok := m.prs[wt.Branch]; ok && wt.Branch != "" {
+		return fmt.Sprintf("#%d", pr.Number)
 	}
 	return ""
 }
@@ -85,7 +122,7 @@ func issueKeyFromBranch(name string) string {
 func (m Model) worktreeForKey(key string) *gitx.Worktree {
 	for i := range m.wts {
 		wt := &m.wts[i]
-		if !wt.IsPrimary && !wt.Prunable && issueKeyFromBranch(wt.Branch) == key {
+		if !wt.IsPrimary && !wt.Prunable && m.wtKey(*wt) == key {
 			return wt
 		}
 	}
@@ -168,7 +205,7 @@ func (m Model) paneLabel(dir string) string {
 	for i := range m.wts {
 		wt := &m.wts[i]
 		if wt.Path == dir {
-			if k := issueKeyFromBranch(wt.Branch); k != "" {
+			if k := m.wtKey(*wt); k != "" {
 				return k + " · " + filepath.Base(dir)
 			}
 			break

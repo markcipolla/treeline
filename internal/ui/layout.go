@@ -40,8 +40,9 @@ const (
 
 	colKeyW, colPriW, colGitW, colCiW = 10, 8, 10, 3
 	colAsgW, repoMax                  = 14, 14
+	colPrW                            = 6 // "#12345"
 	titleMin, titleWant               = 12, 28
-	wtMin, wtWant                     = 8, 24
+	wtMin, wtWant                     = 8, 15
 
 	// below this the grid is a column beside the work panes (or a toy
 	// terminal), and TITLE has to be bought out of the cells around it

@@ -125,6 +125,46 @@ func branchStatus(ctx context.Context, token, owner, repo, branch string) Status
 	return statusFromRuns(out.CheckRuns)
 }
 
+// OpenPRs lists a repo's open pull requests keyed by head branch, so each
+// worktree's row can carry its PR number. One call: the first 100 cover it.
+func OpenPRs(ctx context.Context, token, owner, repo string) map[string]PR {
+	u := fmt.Sprintf("https://api.github.com/repos/%s/%s/pulls?state=open&per_page=100",
+		url.PathEscape(owner), url.PathEscape(repo))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+	var out []struct {
+		Number int    `json:"number"`
+		Title  string `json:"title"`
+		URL    string `json:"html_url"`
+		Head   struct {
+			Ref string `json:"ref"`
+		} `json:"head"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&out); err != nil {
+		return nil
+	}
+	prs := make(map[string]PR, len(out))
+	for _, p := range out {
+		prs[p.Head.Ref] = PR{Number: p.Number, Title: p.Title, HeadRefName: p.Head.Ref, URL: p.URL}
+	}
+	return prs
+}
+
 // checkRun is one entry of a commit's check-runs listing.
 type checkRun struct {
 	Status     string `json:"status"`

@@ -60,6 +60,7 @@ type authDoneMsg struct {
 
 type ciMsg struct {
 	statuses map[string]github.Status
+	prs      map[string]github.PR // open PRs by head branch; nil when the fetch failed
 }
 
 type deviceCodeMsg struct {
@@ -298,7 +299,11 @@ func reviewWorktreeCmd(root string, pr github.PR) tea.Cmd {
 				return createdMsg{root: root, err: err}
 			}
 		}
-		return createWorktreeCmd(root, pr.HeadRefName, "")()
+		msg := createWorktreeCmd(root, pr.HeadRefName, "")()
+		if cm, ok := msg.(createdMsg); ok && cm.err == nil {
+			_ = gitx.MarkReview(root, pr.HeadRefName) // files it under REVIEWING
+		}
+		return msg
 	}
 }
 
@@ -357,7 +362,10 @@ func loadCICmd(token, owner, repo string, branches []string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
-		return ciMsg{statuses: github.BranchStatuses(ctx, token, owner, repo, branches)}
+		return ciMsg{
+			statuses: github.BranchStatuses(ctx, token, owner, repo, branches),
+			prs:      github.OpenPRs(ctx, token, owner, repo),
+		}
 	}
 }
 

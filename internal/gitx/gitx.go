@@ -27,6 +27,30 @@ type Worktree struct {
 	Ahead       int
 	Behind      int
 	HasUpstream bool
+	Review      bool // opened by treeline's review flow (see MarkReview)
+}
+
+// reviewKey is the per-branch git config flag a review worktree carries. It
+// lives in branch.<name>, so deleting the branch takes it along.
+const reviewKey = "treelinereview"
+
+// MarkReview records that a branch was checked out to review a PR.
+func MarkReview(root, branchName string) error {
+	_, err := run(root, "config", "branch."+branchName+"."+reviewKey, "true")
+	return err
+}
+
+// reviewBranches lists the branches MarkReview has flagged.
+func reviewBranches(root string) map[string]bool {
+	out, _ := run(root, "config", "--get-regexp", `^branch\..*\.`+reviewKey+`$`)
+	set := map[string]bool{}
+	for _, line := range strings.Split(out, "\n") {
+		key, _, _ := strings.Cut(line, " ")
+		if b, ok := strings.CutSuffix(strings.TrimPrefix(key, "branch."), "."+reviewKey); ok {
+			set[b] = true
+		}
+	}
+	return set
 }
 
 func run(dir string, args ...string) (string, error) {
@@ -94,8 +118,10 @@ func List(root string) ([]Worktree, error) {
 	if len(wts) > 0 {
 		wts[0].IsPrimary = true
 	}
+	reviews := reviewBranches(root)
 	for i := range wts {
 		wts[i].Root = root
+		wts[i].Review = wts[i].Branch != "" && reviews[wts[i].Branch]
 	}
 
 	var wg sync.WaitGroup
