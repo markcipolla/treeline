@@ -96,6 +96,7 @@ type Model struct {
 
 	// CI status per branch name
 	ci      map[string]github.Status
+	prs     map[string]github.PR // open pull requests by head branch
 	ghToken string
 	ghOwner string
 	ghRepo  string
@@ -316,6 +317,7 @@ func New(cfg *config.Config, root string) Model {
 		zones:         zones,
 		table:         t,
 		ci:            map[string]github.Status{},
+		prs:           map[string]github.PR{},
 		ghToken:       github.Token(cfg.GitHub.Token),
 		ghOwner:       ghOwner,
 		ghRepo:        ghRepo,
@@ -408,7 +410,7 @@ func (m *Model) syncExtras(all bool) tea.Cmd {
 	var keys []string
 	seen := map[string]bool{}
 	for _, wt := range m.wts {
-		if k := issueKeyFromBranch(wt.Branch); k != "" && !known[k] && !seen[k] {
+		if k := m.wtKey(wt); k != "" && !known[k] && !seen[k] {
 			seen[k] = true
 			keys = append(keys, k)
 		}
@@ -541,8 +543,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for b, s := range msg.statuses {
 			m.ci[b] = s
 		}
+		for b, pr := range msg.prs {
+			m.prs[b] = pr
+		}
 		m.refreshRows()
-		return m, m.syncPanes()
+		// PR titles can name cards the branches don't
+		return m, tea.Batch(m.syncPanes(), m.syncExtras(false))
 
 	case searchDebounceMsg:
 		if msg.seq != m.searchSeq || m.screen != scrSearch {
@@ -723,7 +729,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.extraIssues = m.extraIssues[:0]
 		seen := map[string]bool{}
 		for _, wt := range m.wts {
-			k := issueKeyFromBranch(wt.Branch)
+			k := m.wtKey(wt)
 			if is, ok := byID[k]; ok && !seen[k] {
 				seen[k] = true
 				m.extraIssues = append(m.extraIssues, is)
@@ -790,10 +796,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.pendKey, m.pendTitle = "", ""
+		// known now, so the row shows its PR and card before CI next polls
+		m.prs[msg.pr.HeadRefName] = *msg.pr
 		if wt := m.worktreeForBranch(msg.pr.HeadRefName); wt != nil {
 			// already checked out: open it and ask for the review there
 			m.agentPrompt[wt.Path] = reviewPrompt(*msg.pr)
-			return m.openWorktree(wt.Path)
+			wt.Review = true
+			root, b := m.repoRoot(wt), wt.Branch
+			m.refreshRows()
+			mm, cmd := m.openWorktree(wt.Path)
+			return mm, tea.Batch(cmd, func() tea.Msg { _ = gitx.MarkReview(root, b); return nil })
 		}
 		m.pendPR = msg.pr
 		m.screen = scrCreating
@@ -1046,7 +1058,7 @@ func (m Model) gridChrome() lipgloss.Style {
 }
 
 // setTableLayout sizes the issue table's columns for the given width. Columns
-// are shed as the space shrinks, least useful first: ASSIGNEE, then REPO
+// are shed as the space shrinks, least useful first: PR, ASSIGNEE, then REPO
 // (whose worktree path names the repo anyway), then WORKTREE (the pane titles
 // name the directory), then PRIORITY, and CI last. KEY, TITLE and GIT stay
 // whatever happens — they are what makes a row worth reading. A zero width
@@ -1076,7 +1088,7 @@ func (m Model) repoColWidth() int {
 // issues column grows to this when it takes focus in a column layout.
 func (m Model) gridFullWidth() int {
 	total := colKeyW + colGitW + titleWant + 3*gridPad
-	for _, x := range []int{colAsgW, m.repoColWidth(), colPriW, wtWant, colCiW} {
+	for _, x := range []int{colAsgW, m.repoColWidth(), colPriW, wtWant, colPrW, colCiW} {
 		if x > 0 {
 			total += x + gridPad
 		}
@@ -1087,7 +1099,7 @@ func (m Model) gridFullWidth() int {
 func (m *Model) setTableLayout(w, h int) {
 	pad := gridPad
 	w-- // renderTable appends a right edge to every row
-	keyW, priW, gitW, ciW := colKeyW, colPriW, colGitW, colCiW
+	keyW, priW, gitW, ciW, prW := colKeyW, colPriW, colGitW, colCiW, colPrW
 	repoW := m.repoColWidth()
 	asgW, wtW := colAsgW, wtMin
 
@@ -1095,7 +1107,7 @@ func (m *Model) setTableLayout(w, h int) {
 	// always there, plus each optional one and its divider and padding
 	used := func(t int) int {
 		total := keyW + gitW + t + 3*pad
-		for _, x := range []int{asgW, repoW, priW, wtW, ciW} {
+		for _, x := range []int{asgW, repoW, priW, wtW, prW, ciW} {
 			if x > 0 {
 				total += x + pad
 			}
@@ -1103,7 +1115,7 @@ func (m *Model) setTableLayout(w, h int) {
 		return total
 	}
 	// shed columns until the row fits with TITLE at its floor
-	for _, drop := range []*int{&asgW, &repoW, &wtW, &priW, &ciW} {
+	for _, drop := range []*int{&prW, &asgW, &repoW, &wtW, &priW, &ciW} {
 		if used(titleMin) <= w {
 			break
 		}
@@ -1153,6 +1165,7 @@ func (m *Model) setTableLayout(w, h int) {
 		table.Column{Title: "ASSIGNEE", Width: asgW},
 		table.Column{Title: "WORKTREE", Width: wtW},
 		table.Column{Title: "GIT", Width: gitW},
+		table.Column{Title: "PR", Width: prW},
 		table.Column{Title: "CI", Width: ciW},
 	)
 	m.table.SetColumns(columns)
@@ -1239,7 +1252,7 @@ func (m *Model) refreshRows() {
 	var spare []*gitx.Worktree
 	for i := range m.wts {
 		wt := &m.wts[i]
-		k := issueKeyFromBranch(wt.Branch)
+		k := m.wtKey(*wt)
 		if !wt.IsPrimary && !wt.Prunable && k != "" && issueKeys[k] && linked[k] == nil {
 			linked[k] = wt
 		} else {
@@ -1255,6 +1268,7 @@ func (m *Model) refreshRows() {
 	}
 	var groups []*group
 	byName := map[string]*group{}
+	var reviewing []*linear.Issue // cards whose worktree reviews someone's PR
 	for i := range all {
 		is := &all[i]
 		wt := linked[is.Identifier]
@@ -1262,6 +1276,10 @@ func (m *Model) refreshRows() {
 			continue
 		}
 		if q != "" && !strings.Contains(issueHaystack(*is, wt, m.root), q) {
+			continue
+		}
+		if wt != nil && wt.Review {
+			reviewing = append(reviewing, is)
 			continue
 		}
 		g := byName[is.State]
@@ -1289,36 +1307,48 @@ func (m *Model) refreshRows() {
 	var refs []rowRef
 	// row assembles cells in column order, dropping REPO when the column is
 	// not in the set — renderRow indexes the columns per cell
-	row := func(key, title, pri, asg, repo, wt, git, ci string) table.Row {
+	row := func(key, title, pri, asg, repo, wt, git, pr, ci string) table.Row {
 		r := table.Row{key}
 		if m.multiRepo() {
 			r = append(r, repo)
 		}
-		return append(r, title, pri, asg, wt, git, ci)
+		return append(r, title, pri, asg, wt, git, pr, ci)
 	}
 	header := func(title string) {
 		// plain text: styled cells break the table's width-based truncation
-		rows = append(rows, row("", "▸ "+title, "", "", "", "", "", ""))
+		rows = append(rows, row("", "▸ "+title, "", "", "", "", "", "", ""))
 		refs = append(refs, rowRef{kind: rowHeader})
 	}
 
+	issueRow := func(is *linear.Issue) (table.Row, rowRef) {
+		wt := linked[is.Identifier]
+		wtCell, gitCell, prCell, ciCell := "", "", "", ""
+		if wt != nil {
+			wtCell = m.wtLabel(wt)
+			gitCell = wtStatus(*wt)
+			prCell = m.prCell(wt)
+			ciCell = ciSymbol(m.ci[wt.Branch])
+		}
+		return row(is.Identifier, is.Title, linear.PriorityName(is.Priority), is.Assignee, m.wtRepoName(wt), wtCell, gitCell, prCell, ciCell),
+			rowRef{kind: rowIssue, issue: is, wt: wt}
+	}
 	for _, g := range groups {
 		header(strings.ToUpper(g.name))
 		for _, is := range g.issues {
-			wt := linked[is.Identifier]
-			wtCell, gitCell, ciCell := "", "", ""
-			if wt != nil {
-				wtCell = m.wtLabel(wt)
-				gitCell = wtStatus(*wt)
-				ciCell = ciSymbol(m.ci[wt.Branch])
-			}
-			rows = append(rows, row(is.Identifier, is.Title, linear.PriorityName(is.Priority), is.Assignee, m.wtRepoName(wt), wtCell, gitCell, ciCell))
-			refs = append(refs, rowRef{kind: rowIssue, issue: is, wt: wt})
+			r, ref := issueRow(is)
+			rows = append(rows, r)
+			refs = append(refs, ref)
 		}
 	}
 
-	var wtRows []table.Row
-	var wtRefs []rowRef
+	// reviews close the list: card-linked ones first, then bare branches
+	var wtRows, revRows []table.Row
+	var wtRefs, revRefs []rowRef
+	for _, is := range reviewing {
+		r, ref := issueRow(is)
+		revRows = append(revRows, r)
+		revRefs = append(revRefs, ref)
+	}
 	for _, wt := range spare {
 		if q != "" && !strings.Contains(wtHaystack(*wt, m.root), q) {
 			continue
@@ -1330,13 +1360,24 @@ func (m *Model) refreshRows() {
 		if wt.IsPrimary {
 			name += " ●"
 		}
-		wtRows = append(wtRows, row("", name, "", "", m.wtRepoName(wt), m.wtLabel(wt), wtStatus(*wt), ciSymbol(m.ci[wt.Branch])))
+		r := row("", name, "", "", m.wtRepoName(wt), m.wtLabel(wt), wtStatus(*wt), m.prCell(wt), ciSymbol(m.ci[wt.Branch]))
+		if !wt.IsPrimary && wt.Review {
+			revRows = append(revRows, r)
+			revRefs = append(revRefs, rowRef{kind: rowWorktree, wt: wt})
+			continue
+		}
+		wtRows = append(wtRows, r)
 		wtRefs = append(wtRefs, rowRef{kind: rowWorktree, wt: wt})
 	}
 	if len(wtRows) > 0 {
 		header("WORKTREES")
 		rows = append(rows, wtRows...)
 		refs = append(refs, wtRefs...)
+	}
+	if len(revRows) > 0 {
+		header("REVIEWING")
+		rows = append(rows, revRows...)
+		refs = append(refs, revRefs...)
 	}
 
 	cur := m.table.Cursor()
@@ -2394,7 +2435,7 @@ func (m Model) setupScriptEnv(dir string) (branch, issue string) {
 	branch, issue = m.createdBranch, m.pendKey
 	if ref := m.selectedRef(); ref.wt != nil && ref.wt.Path == dir {
 		branch = ref.wt.Branch
-		issue = issueKeyFromBranch(branch)
+		issue = m.wtKey(*ref.wt)
 	}
 	return branch, issue
 }

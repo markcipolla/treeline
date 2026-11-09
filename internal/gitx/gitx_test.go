@@ -490,3 +490,21 @@ func TestParseGrepRecordNULDelimited(t *testing.T) {
 		t.Error("a non-numeric line number should not parse")
 	}
 }
+
+// TestMarkReview: a branch flagged by MarkReview lists as a review, others
+// (including ones with dots in the name) don't.
+func TestMarkReview(t *testing.T) {
+	root := t.TempDir()
+	for _, args := range [][]string{{"init", "-q"}, {"config", "branch.other.remote", "origin"}} {
+		if _, err := run(root, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := MarkReview(root, "alex/v1.2-fix"); err != nil {
+		t.Fatal(err)
+	}
+	got := reviewBranches(root)
+	if !got["alex/v1.2-fix"] || got["other"] || len(got) != 1 {
+		t.Fatalf("reviewBranches = %v", got)
+	}
+}
